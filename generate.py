@@ -13,6 +13,9 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 
+from time_profiler import TimeProfiler
+TimeProfiler.set_warm_up(5)
+
 def device_sync(device):
     if "cuda" in device:
         torch.cuda.synchronize(device)
@@ -22,11 +25,11 @@ def device_sync(device):
         print(f"device={device} is not yet suppported")
 
 
-torch._inductor.config.coordinate_descent_tuning = True
-torch._inductor.config.triton.unique_kernel_names = True
+# torch._inductor.config.coordinate_descent_tuning = True
+# torch._inductor.config.triton.unique_kernel_names = True
 # Experimental features to reduce compilation times, will be on by default in future
-torch._inductor.config.fx_graph_cache = True 
-torch._functorch.config.enable_autograd_cache = True
+# torch._inductor.config.fx_graph_cache = True 
+# torch._functorch.config.enable_autograd_cache = True
 
 default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -97,20 +100,26 @@ def speculative_decode(
     # draft model inference sequentially
     device = cur_token.device
     orig_input_pos = torch.tensor([input_pos], dtype=torch.int64, device=cur_token.device)
-    draft_tokens, draft_probs = decode_n_tokens(draft_model, cur_token.view(1, -1), orig_input_pos.clone(), speculate_k, **sampling_kwargs)
+    with TimeProfiler("Speculate Decode"):
+        draft_tokens, draft_probs = decode_n_tokens(draft_model, cur_token.view(1, -1), orig_input_pos.clone(), speculate_k, **sampling_kwargs)
 
     draft_tokens = torch.cat(draft_tokens)
+    if len(draft_tokens.shape) > 1:
+        draft_tokens = draft_tokens.view(-1)
     # parallel inference on target model using draft tokens
-    target_logits = model_forward(
-        model,
-        torch.cat([cur_token.view(1), draft_tokens]).view(1, -1),
-        torch.arange(input_pos, input_pos + speculate_k + 1, device=cur_token.device)
-    )
+    with TimeProfiler("Verification"):
+        target_logits = model_forward(
+            model,
+            torch.cat([cur_token.view(1), draft_tokens]).view(1, -1),
+            torch.arange(input_pos, input_pos + speculate_k + 1, device=cur_token.device)
+        )
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
     draft_probs = torch.stack(draft_probs)
     # q: target prob, p: draft prob
     # q >= p: always accept draft token
     # q < p: q/p prob to accept draft token
+    if len(draft_probs.shape) > 2:
+        draft_probs = draft_probs.squeeze(1)
     p = draft_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
     q = target_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
     accept_draft_prob = torch.minimum(torch.ones(()), q[:speculate_k]/ p)
@@ -177,7 +186,8 @@ def generate(
     seq = empty
     input_pos = torch.arange(0, T, device=device)
 
-    next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
+    with TimeProfiler("Prefill"):
+        next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
     if is_speculative:
         prefill(draft_model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs)
     seq[:, T] = next_token.squeeze()
@@ -196,7 +206,7 @@ def generate(
 
             accept_counts[len(next_tokens) - 1] += 1
             num_added = min(T_new - input_pos - 1, len(next_tokens))
-            seq[input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
+            seq[:,input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
             for i in next_tokens[: num_added,]:
                 callback(i)
             input_pos = input_pos + num_added

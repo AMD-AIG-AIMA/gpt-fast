@@ -3,10 +3,16 @@ import time
 from pathlib import Path
 from typing import Optional
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from tqdm import tqdm
-from generate import generate, encode_tokens, get_tokenizer, _load_model, model_forward, logits_to_probs, decode_one_token, prefill
 from fastchat.model import get_conversation_template
 from tp import maybe_init_dist, apply_tp
+from model import Transformer
+from tokenizer import get_tokenizer
+import itertools
+from typing import Optional, Tuple, Union
+from time_profiler import TimeProfiler
+TimeProfiler.set_warm_up(5)
 
 MODEL_TO_TEMPLATE = {
     "llama-2-7b-chat": "llama-2-chat",
@@ -18,8 +24,10 @@ MODEL_TO_TEMPLATE = {
     # Add more mappings as needed
 }
 
+default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 def load_benchmark_data(bench_name):
-    data_path = Path(f"./data/{bench_name}/questions.jsonl")
+    data_path = Path(f"./data/{bench_name}/question.jsonl")
     questions = []
     with open(data_path, 'r') as f:
         for line in f:
@@ -32,6 +40,275 @@ def get_model_template(model_name):
             return template
     return "llama-2-chat"  # Default to llama-2-chat if no match found
 
+def multinomial_sample_one_no_sync(probs_sort): # Does multinomial sampling without a cuda synchronization
+    q = torch.empty_like(probs_sort).exponential_(1)
+    return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
+
+def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = None):
+    logits = logits / max(temperature, 1e-5)
+
+    if top_k is not None:
+        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+        pivot = v.select(-1, -1).unsqueeze(-1)
+        logits = torch.where(logits < pivot, -float("Inf"), logits)
+    probs = torch.nn.functional.softmax(logits, dim=-1)
+    return probs
+
+def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
+    probs = logits_to_probs(logits[:, -1], temperature, top_k)
+    idx_next = multinomial_sample_one_no_sync(probs)
+    return idx_next, probs
+
+def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
+    # input_pos: [B, S]
+    logits = model(x, input_pos)
+    return sample(logits, **sampling_kwargs)[0]
+
+def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    # input_pos: [B, 1]
+    assert input_pos.shape[-1] == 1
+    logits = model(x, input_pos)
+    return sample(logits, **sampling_kwargs)
+
+def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torch.Tensor, num_new_tokens: int, callback=lambda _: _, **sampling_kwargs):
+    new_tokens, new_probs = [], []
+    for i in range(num_new_tokens):
+        with sdpa_kernel([SDPBackend.MATH,SDPBackend.FLASH_ATTENTION]):
+            next_token, next_prob = decode_one_token(
+                model, cur_token, input_pos, **sampling_kwargs
+            )
+            input_pos += 1
+            new_tokens.append(next_token.clone())
+            callback(new_tokens[-1])
+            new_probs.append(next_prob.clone())
+            cur_token = next_token.clone()
+
+    return new_tokens, new_probs
+
+
+def model_forward(model, x, input_pos):
+    return model(x, input_pos)
+
+def speculative_decode(
+    model: Transformer,
+    draft_model: Transformer,
+    cur_token: torch.Tensor,
+    input_pos: int,
+    speculate_k: int,
+    **sampling_kwargs
+) -> torch.Tensor:
+    # draft model inference sequentially
+    device = cur_token.device
+    orig_input_pos = torch.tensor([input_pos], dtype=torch.int64, device=cur_token.device)
+    with TimeProfiler("Speculate Decode", model_size=model_size(draft_model), peak_bandwidth=1.6e12) as profiler:
+        profiler.set_tokens_processed(speculate_k)
+        draft_tokens, draft_probs = decode_n_tokens(draft_model, cur_token.view(1, -1), orig_input_pos.clone(), speculate_k, **sampling_kwargs)
+
+    draft_tokens = torch.cat(draft_tokens)
+    if len(draft_tokens.shape) > 1:
+        draft_tokens = draft_tokens.view(-1)
+    # parallel inference on target model using draft tokens
+    with TimeProfiler("Verification", model_size=model_size(model), peak_bandwidth=1.6e12) as profiler:
+        profiler.set_tokens_processed(1)
+        target_logits = model_forward(
+            model,
+            torch.cat([cur_token.view(1), draft_tokens]).view(1, -1),
+            torch.arange(input_pos, input_pos + speculate_k + 1, device=cur_token.device)
+        )
+    target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
+    draft_probs = torch.stack(draft_probs)
+    # q: target prob, p: draft prob
+    # q >= p: always accept draft token
+    # q < p: q/p prob to accept draft token
+    if len(draft_probs.shape) > 2:
+        draft_probs = draft_probs.squeeze(1)
+    p = draft_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
+    q = target_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
+    accept_draft_prob = torch.minimum(torch.ones(()), q[:speculate_k]/ p)
+    rejected_locations = (torch.rand_like(accept_draft_prob) > accept_draft_prob).nonzero()
+
+    if rejected_locations.shape[0] == 0: # All draft tokens have been accepted
+        accept_length = speculate_k + 1
+        last_token = multinomial_sample_one_no_sync(target_probs[-1])
+        # fill last token into draft model
+        model_forward(
+            draft_model,
+            draft_tokens[-1].view(1, -1),
+            orig_input_pos + speculate_k,
+        )
+        return torch.cat([draft_tokens, last_token])
+    else:
+        accept_length = rejected_locations[0].item()
+        p = draft_probs[accept_length]
+        q = target_probs[accept_length]
+        new = q - p
+        new = torch.where(new > 0, new, 0.0)
+        new = new / new.sum()
+        next_token = multinomial_sample_one_no_sync(new)
+        return torch.cat([draft_tokens[:accept_length], next_token])
+
+@torch.no_grad()
+def generate(
+    model: Transformer,
+    prompt: torch.Tensor,
+    max_new_tokens: int,
+    batch_size: int,
+    *,
+    interactive: bool,
+    draft_model: Transformer,
+    speculate_k: Optional[int] = 8,
+    callback = lambda x: x,
+    **sampling_kwargs
+) -> torch.Tensor:
+    """
+    Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
+    """
+
+    is_speculative = draft_model is not None
+    # create an empty tensor of the expected final shape and fill in the current tokens
+    T = prompt.size(-1)
+    T_new = T + max_new_tokens
+    if interactive:
+        max_seq_length = 350
+    else:
+        max_seq_length = min(T_new, model.config.block_size)
+
+    device, dtype = prompt.device, prompt.dtype
+    max_seq_length = max_seq_length + speculate_k + 1 if is_speculative else max_seq_length
+    with torch.device(device):
+        model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
+        if is_speculative and draft_model is not model:
+            draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
+
+    # create an empty tensor of the expected final shape and fill in the current tokens
+    empty = torch.empty(batch_size, T_new, dtype=dtype, device=device)
+    # We are just making the same prompt for every batch
+    prompt = prompt.view(1, -1).repeat(batch_size, 1)
+    empty[:, :T] = prompt
+    seq = empty
+    input_pos = torch.arange(0, T, device=device)
+
+    with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=1.6e12) as profiler:
+        profiler.set_tokens_processed(1)
+        next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
+    if is_speculative:
+        prefill(draft_model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs)
+    seq[:, T] = next_token.squeeze()
+
+    input_pos = torch.tensor([T], device=device, dtype=torch.int)
+    accept_counts = [0] * (speculate_k + 1)
+
+    if is_speculative:
+        input_pos = input_pos.item()  # for speculative decoding easier to keep on host
+        while input_pos < T_new - 1:
+            cur_token = next_token.view(())
+
+            next_tokens = speculative_decode(
+                model, draft_model, cur_token, input_pos, speculate_k, **sampling_kwargs
+            )
+
+            accept_counts[len(next_tokens) - 1] += 1
+            num_added = min(T_new - input_pos - 1, len(next_tokens))
+            seq[:,input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
+            for i in next_tokens[: num_added,]:
+                callback(i)
+            input_pos = input_pos + num_added
+            next_token = next_tokens[-1]
+    else:
+        new_tokens, new_probs = [], []
+        cur_token = next_token.view(batch_size, -1)
+        num_new_tokens = max_new_tokens - 1
+        for i in range(num_new_tokens):
+            with TimeProfiler("Vanilla Decoding", model_size=model_size(model), peak_bandwidth=1.6e12) as profiler:
+                profiler.set_tokens_processed(1)
+                with sdpa_kernel([SDPBackend.MATH, SDPBackend.FLASH_ATTENTION]):
+                    next_token, next_prob = decode_one_token(
+                        model, cur_token, input_pos, **sampling_kwargs
+                    )
+                    input_pos += 1
+                    new_tokens.append(next_token.clone())
+                    callback(new_tokens[-1])
+                    new_probs.append(next_prob.clone())
+                    cur_token = next_token.clone()
+        seq[:, T + 1:] = torch.cat(new_tokens, dim=-1)
+
+    generate_stats = {
+        'accept_counts': accept_counts
+    }
+    return seq, generate_stats
+
+def encode_tokens(tokenizer, string, bos=True, device=default_device):
+    tokens = tokenizer.encode(string)
+    if bos:
+        tokens = [tokenizer.bos_id()] + tokens
+    return torch.tensor(tokens, dtype=torch.int, device=device)
+
+def _load_model(checkpoint_path, device, precision, use_tp):
+    use_cuda = 'cuda' in device
+    with torch.device('meta'):
+        model = Transformer.from_name(checkpoint_path.parent.name)
+
+    if "int8" in str(checkpoint_path):
+        print("Using int8 weight-only quantization!")
+        from quantize import WeightOnlyInt8QuantHandler
+        simple_quantizer = WeightOnlyInt8QuantHandler(model)
+        model = simple_quantizer.convert_for_runtime()
+
+    if "int4" in str(checkpoint_path):
+        print("Using int4 weight-only quantization!")
+        path_comps = checkpoint_path.name.split(".")
+        groupsize = int(path_comps[-2][1:])
+        from quantize import WeightOnlyInt4QuantHandler
+        simple_quantizer = WeightOnlyInt4QuantHandler(model, groupsize)
+        model = simple_quantizer.convert_for_runtime()
+
+    checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
+    if "model" in checkpoint and "stories" in str(checkpoint_path):
+        checkpoint = checkpoint["model"]
+    model.load_state_dict(checkpoint, assign=True)
+
+    if use_tp:
+        from tp import apply_tp
+        print("Applying tensor parallel to model ...")
+        apply_tp(model)
+
+    model = model.to(device=device, dtype=precision)
+    return model.eval()
+
+def model_size(model):
+    if hasattr(model, "model_size_cache"):
+        return model.model_size_cache
+    else:
+        param_size = 0
+        for param in model.parameters():
+            param_size += param.nelement() * param.element_size()
+        buffer_size = 0
+        for buffer in model.buffers():
+            buffer_size += buffer.nelement() * buffer.element_size()
+        
+        # size_all_mb = (param_size + buffer_size) / 1024**2
+        model.model_size_cache =  param_size + buffer_size
+        return model.model_size_cache
+
+def _get_model_size(model):
+    model_size = 0
+    params = 0
+    for name, child in model.named_children():
+        if not isinstance(child, torch.nn.Embedding):
+            model_size += sum(
+                [
+                    p.numel() * p.dtype.itemsize
+                    for p in itertools.chain(child.parameters(), child.buffers())
+                ]
+            )
+            params += sum(
+                [
+                    p.numel()
+                    for p in itertools.chain(child.parameters(), child.buffers())
+                ]
+            )
+    return model_size, params
+
 def main(
     bench_name: str,
     checkpoint_path: Path,
@@ -43,7 +320,10 @@ def main(
     speculate_k: int = 5,
     compile: bool = False,
     compile_prefill: bool = False,
+    num_questions: Optional[int] = None,
+    warmup: int = 5,
 ):
+    global print
     # Initialize distributed setup
     rank = maybe_init_dist()
     use_tp = rank is not None
@@ -77,10 +357,10 @@ def main(
     if compile:
         if is_speculative:
             global model_forward, logits_to_probs
-            model_forward = torch.compile(model_forward, mode="reduce-overhead", fullgraph=True)
+            model_forward = torch.compile(model_forward, mode="max-autotune", fullgraph=True)
 
         global decode_one_token, prefill
-        decode_one_token = torch.compile(decode_one_token, mode="reduce-overhead", fullgraph=True)
+        decode_one_token = torch.compile(decode_one_token, mode="max-autotune", fullgraph=True)
 
         if compile_prefill:
             prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
@@ -92,12 +372,36 @@ def main(
     
     model_template = get_model_template(checkpoint_path.name)
     
-    system_message = ("You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, "
-                      "while being safe. Your answers should not include any harmful, unethical, racist, sexist, toxic, "
-                      "dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\n"
-                      "If a question does not make any sense, or is not factually coherent, explain why instead of answering "
-                      "something not correct. If you don't know the answer to a question, please don't share false information.")
+    system_message = ("You are a helpful, respectful and honest assistant. Always answer as helpfully as possible. ")
     
+    # Warmup calls
+    for i in range(warmup):
+        question = questions[i]
+        conv = get_conversation_template(model_template)
+        conv.set_system_message(system_message)
+
+        for j in range(len(question["turns"])):
+            qs = question["turns"][j]
+            conv.append_message(conv.roles[0], qs)
+            conv.append_message(conv.roles[1], None)
+            prompt = conv.get_prompt()
+            
+            encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
+            output, metrics = generate(
+                model,
+                encoded,
+                max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                interactive=False,
+                batch_size=1,
+                draft_model=draft_model,
+                speculate_k=speculate_k,
+                callback=lambda x: x,
+            )
+
+    if num_questions is not None:
+        questions = questions[:num_questions]
     for question in tqdm(questions):
         torch.manual_seed(0)
 
@@ -117,18 +421,19 @@ def main(
             encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
             
             start_time = time.time()
-            output, metrics = generate(
-                model,
-                encoded,
-                max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-                interactive=False,
-                batch_size=1,
-                draft_model=draft_model,
-                speculate_k=speculate_k,
-                callback=lambda x: x,
-            )
+            with TimeProfiler("generate"):
+                output, metrics = generate(
+                    model,
+                    encoded,
+                    max_new_tokens,
+                    temperature=temperature,
+                    top_k=top_k,
+                    interactive=False,
+                    batch_size=1,
+                    draft_model=draft_model,
+                    speculate_k=speculate_k,
+                    callback=lambda x: x,
+                )
             end_time = time.time()
             
             output_ids = output[0][len(encoded):]
@@ -137,7 +442,7 @@ def main(
                 if stop_token_ids_index:
                     output_ids = output_ids[:stop_token_ids_index[0]]
 
-            generated_text = tokenizer.decode(output_ids, skip_special_tokens=True)
+            generated_text = tokenizer.decode(output_ids.tolist())
             
             if conv.stop_str:
                 stop_str_index = generated_text.find(conv.stop_str)
@@ -147,7 +452,7 @@ def main(
             generated_text = generated_text.strip()
             
             walltime = end_time - start_time
-            tokens_generated = len(output_ids)
+            tokens_generated = len(output_ids) - len(encoded)
             speed = tokens_generated / walltime
             
             turns.append(generated_text)
@@ -185,26 +490,81 @@ def main(
         print(f"Max generation speed: {max_speed:.2f} tokens/second")
 
         if is_speculative:
-            counts_aggregated = [sum(result['accept_counts']) for result in results]
+            counts_aggregated = [0] * (speculate_k + 1)
+            for result in results:
+                counts_aggregated = [count + result['accept_counts'][idx] for idx, count in enumerate(counts_aggregated)]
             total_counts = sum(counts_aggregated)
             acceptance_probs = [count / total_counts for count in counts_aggregated]
             print(f"Acceptance probs: {acceptance_probs}")
-            print(f"Mean Accepted: {sum([idx * count for idx, count in enumerate(counts_aggregated)]) / total_counts:.2f}")
+            print(f"Mean Accepted: {sum([(idx+1) * count for idx, count in enumerate(counts_aggregated[:-1])]) / sum(counts_aggregated[:-1]):.2f}")
+
+
+def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
+    target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
+    draft_probs = torch.stack(draft_probs)
+
+    # Initialize p_i and h_i
+    p = torch.ones(1, device=device)
+    accept_length = 0
+
+    for i in range(speculate_k):
+        q = target_probs[i]
+        p_draft = draft_probs[i]
+
+        # Calculate p_i
+        p_i = torch.minimum(p * q / p_draft, torch.ones_like(p))
+
+        # Calculate h_i
+        residual_mass = torch.sum(torch.maximum(p * q - p_draft, torch.zeros_like(p)))
+        h_i = residual_mass / (residual_mass + 1 - p)
+
+        # Acceptance step
+        if torch.rand(1, device=device) <= h_i:
+            accept_length = i + 1
+            p = p_i[draft_tokens[i]]
+        else:
+            break
+
+    if accept_length == speculate_k:
+        # All draft tokens have been accepted
+        accept_length += 1
+        last_token = multinomial_sample_one_no_sync(target_probs[-1])
+
+        # fill last token into draft model
+        model_forward(
+            draft_model,
+            draft_tokens[-1].view(1, -1),
+            orig_input_pos + speculate_k,
+        )
+
+        return torch.cat([draft_tokens, last_token])
+    else:
+        # Sample from residual distribution
+        p_draft = draft_probs[accept_length]
+        q = target_probs[accept_length]
+        new = torch.maximum(p * q - p_draft, torch.zeros_like(q))
+        new = new / new.sum()
+        next_token = multinomial_sample_one_no_sync(new)
+
+        return torch.cat([draft_tokens[:accept_length], next_token])
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Evaluate model on benchmark datasets.')
-    parser.add_argument('--bench-name', type=str, required=True, help='Name of the benchmark (e.g., mt_bench, human_eval)')
-    parser.add_argument('--checkpoint-path', type=Path, required=True, help='Path to the model checkpoint')
-    parser.add_argument('--max-new-tokens', type=int, default=100, help='Maximum number of new tokens to generate')
+    parser.add_argument('--bench_name', type=str, required=True, help='Name of the benchmark (e.g., mt_bench, human_eval)')
+    parser.add_argument('--checkpoint_path', type=Path, required=True, help='Path to the model checkpoint')
+    parser.add_argument('--max_new_tokens', type=int, default=1024, help='Maximum number of new tokens to generate')
     parser.add_argument('--temperature', type=float, default=0.8, help='Temperature for sampling')
-    parser.add_argument('--top-k', type=int, default=200, help='Top-k for sampling')
+    parser.add_argument('--top_k', type=int, default=200, help='Top-k for sampling')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation')
-    parser.add_argument('--draft-checkpoint-path', type=Path, default=None, help='Path to the draft model checkpoint for speculative decoding')
-    parser.add_argument('--speculate-k', type=int, default=5, help='Speculative execution depth')
+    parser.add_argument('--draft_checkpoint_path', type=Path, default=None, help='Path to the draft model checkpoint for speculative decoding')
+    parser.add_argument('--speculate_k', type=int, default=5, help='Speculative execution depth')
     parser.add_argument('--compile', action='store_true', help='Whether to compile the model')
-    parser.add_argument('--compile-prefill', action='store_true', help='Whether to compile the prefill')
+    parser.add_argument('--compile_prefill', action='store_true', help='Whether to compile the prefill')
+    parser.add_argument('--num_questions', type=int, default=None, help='Number of questions to evaluate')
+    parser.add_argument('--warmup', type=int, default=5, help='Number of warmup steps')
     
     args = parser.parse_args()
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
-         args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill)
+         args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
+         args.warmup)

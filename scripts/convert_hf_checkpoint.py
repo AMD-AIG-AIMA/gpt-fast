@@ -50,7 +50,9 @@ def convert_hf_checkpoint(
       except AssertionError:
         print(f"{model_map_json_pytorch} not found")
    
-    if model_map_json is None: raise Exception("No model map found!")
+    if model_map_json is None:
+        print(f"Could not find index file in {checkpoint_dir}")
+        model_map_json = create_simple_index_file(checkpoint_dir)
 
     with open(model_map_json) as json_map:
         bin_index = json.load(json_map)
@@ -124,6 +126,46 @@ def convert_hf_checkpoint(
         tokenizer_model_tiktoken = checkpoint_dir / "tokenizer.model"
         print(f"Copying {tokenizer_model} to {tokenizer_model_tiktoken}")
         shutil.copy(tokenizer_model, tokenizer_model_tiktoken)
+
+def create_simple_index_file(checkpoint_dir: Path):
+    from safetensors.torch import safe_open
+    # Find all .bin and .safetensors files
+    model_files = list(checkpoint_dir.glob('*.bin')) + list(checkpoint_dir.glob('*.safetensors'))
+    if not model_files:
+        raise FileNotFoundError(f"No .bin or .safetensors files found in {checkpoint_dir}")
+
+    weight_map = {}
+    total_size = 0
+    for model_file in model_files:
+        file_size = model_file.stat().st_size
+        total_size += file_size
+        if model_file.suffix == '.bin':
+            # For .bin files
+            state_dict = torch.load(model_file, map_location='cpu')
+        else:
+            # For .safetensors files
+            with safe_open(model_file, framework="pt", device="cpu") as f:
+                state_dict = {key: f.get_tensor(key) for key in f.keys()}
+        
+        # Add each weight to the weight_map
+        for key in state_dict.keys():
+            weight_map[key] = model_file.name
+    if model_file.suffix == '.bin':
+        index_file = checkpoint_dir / 'pytorch_model.bin.index.json'
+    else:
+        index_file = checkpoint_dir / 'model.safetensors.index.json'
+    # Create the index
+    index = {
+    "metadata": {"total_size": total_size},
+    "weight_map": weight_map
+    }
+    # Write the index file
+    with open(index_file, 'w') as f:
+        json.dump(index, f, indent=2)
+    print(f"Created index file: {index_file}")
+    return index_file
+        
+    # Create a simple index
 
 if __name__ == '__main__':
     import argparse
