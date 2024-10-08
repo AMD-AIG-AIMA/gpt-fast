@@ -530,9 +530,9 @@ if __name__ == "__main__":
                         action='store_true',
                         default=False,
                         help="Disable decoupled async engine frontend.")
-    parser.add_argument("--speculative_model", type=str, default=None,
+    parser.add_argument("--speculative-model", type=str, default=None,
                         help="Path to the speculative model for speculative decoding")
-    parser.add_argument("--num_speculative_tokens", type=int, default=5,
+    parser.add_argument("--num-speculative-tokens", type=int, default=5,
                         help="Number of tokens to speculate in speculative decoding")
     args = parser.parse_args()
     if args.tokenizer is None:
