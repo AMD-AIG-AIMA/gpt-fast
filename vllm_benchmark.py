@@ -84,6 +84,8 @@ def run_vllm(
     download_dir: Optional[str] = None,
     load_format: str = EngineArgs.load_format,
     disable_async_output_proc: bool = False,
+    speculative_model: Optional[str] = None,
+    num_speculative_tokens: int = 5,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -109,6 +111,8 @@ def run_vllm(
         num_scheduler_steps=num_scheduler_steps,
         use_v2_block_manager=use_v2_block_manager,
         disable_async_output_proc=disable_async_output_proc,
+        speculative_model=speculative_model,
+        num_speculative_tokens=num_speculative_tokens if speculative_model else None,
     )
 
     # Add the requests to the engine.
@@ -336,7 +340,8 @@ def main(args: argparse.Namespace):
             args.max_num_batched_tokens, args.distributed_executor_backend,
             args.gpu_memory_utilization, args.num_scheduler_steps,
             args.use_v2_block_manager, args.download_dir, args.load_format,
-            args.disable_async_output_proc
+            args.disable_async_output_proc, args.speculative_model,
+            args.num_speculative_tokens
         ]
 
         if args.async_engine:
@@ -533,6 +538,10 @@ if __name__ == "__main__":
                         action='store_true',
                         default=False,
                         help="Disable decoupled async engine frontend.")
+    parser.add_argument("--speculative_model", type=str, default=None,
+                        help="Path to the speculative model for speculative decoding")
+    parser.add_argument("--num_speculative_tokens", type=int, default=5,
+                        help="Number of tokens to speculate in speculative decoding")
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model
