@@ -317,49 +317,74 @@ def main(args: argparse.Namespace):
         requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
                                    args.output_len)
 
-    if args.backend == "vllm":
-        run_args = [
-            requests, args.model, args.tokenizer, args.quantization,
-            args.tensor_parallel_size, args.seed, args.n, args.use_beam_search,
-            args.trust_remote_code, args.dtype, args.max_model_len,
-            args.enforce_eager, args.kv_cache_dtype,
-            args.quantization_param_path, args.device,
-            args.enable_prefix_caching, args.enable_chunked_prefill,
-            args.max_num_batched_tokens, args.distributed_executor_backend,
-            args.gpu_memory_utilization, args.num_scheduler_steps,
-            args.use_v2_block_manager, args.download_dir, args.load_format,
-            args.disable_async_output_proc, args.speculative_model,
-            args.num_speculative_tokens
-        ]
+    # Process requests in batches
+    batch_size = args.batch_size
+    speeds = []
+    total_tokens = 0
+    total_time = 0
 
-        if args.async_engine:
-            run_args.append(args.disable_frontend_multiprocessing)
-            elapsed_time = uvloop.run(run_vllm_async(*run_args))
+    for i in range(0, len(requests), batch_size):
+        batch = requests[i:i+batch_size]
+        
+        if args.backend == "vllm":
+            run_args = [
+                batch, args.model, args.tokenizer, args.quantization,
+                args.tensor_parallel_size, args.seed, args.n, args.use_beam_search,
+                args.trust_remote_code, args.dtype, args.max_model_len,
+                args.enforce_eager, args.kv_cache_dtype,
+                args.quantization_param_path, args.device,
+                args.enable_prefix_caching, args.enable_chunked_prefill,
+                args.max_num_batched_tokens, args.distributed_executor_backend,
+                args.gpu_memory_utilization, args.num_scheduler_steps,
+                args.use_v2_block_manager, args.download_dir, args.load_format,
+                args.disable_async_output_proc, args.speculative_model,
+                args.num_speculative_tokens
+            ]
+
+            if args.async_engine:
+                run_args.append(args.disable_frontend_multiprocessing)
+                elapsed_time = uvloop.run(run_vllm_async(*run_args))
+            else:
+                elapsed_time = run_vllm(*run_args)
+        elif args.backend == "hf":
+            assert args.tensor_parallel_size == 1
+            elapsed_time = run_hf(batch, args.model, tokenizer, args.n,
+                                  args.use_beam_search, args.hf_max_batch_size,
+                                  args.trust_remote_code)
+        elif args.backend == "mii":
+            elapsed_time = run_mii(batch, args.model, args.tensor_parallel_size,
+                                   args.output_len)
         else:
-            elapsed_time = run_vllm(*run_args)
-    elif args.backend == "hf":
-        assert args.tensor_parallel_size == 1
-        elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
-                              args.use_beam_search, args.hf_max_batch_size,
-                              args.trust_remote_code)
-    elif args.backend == "mii":
-        elapsed_time = run_mii(requests, args.model, args.tensor_parallel_size,
-                               args.output_len)
-    else:
-        raise ValueError(f"Unknown backend: {args.backend}")
-    total_num_tokens = sum(prompt_len + output_len
-                           for _, prompt_len, output_len in requests)
-    print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
-          f"{total_num_tokens / elapsed_time:.2f} tokens/s")
+            raise ValueError(f"Unknown backend: {args.backend}")
+        
+        batch_tokens = sum(prompt_len + output_len for _, prompt_len, output_len in batch)
+        total_tokens += batch_tokens
+        total_time += elapsed_time
+        
+        speed = batch_tokens / elapsed_time
+        speeds.append(speed)
+        print(f"Batch {i//batch_size + 1} speed: {speed:.2f} tokens/s")
+
+    # Calculate and print statistics
+    mean_speed = sum(speeds) / len(speeds)
+    max_speed = max(speeds)
+    overall_speed = total_tokens / total_time
+
+    print(f"Overall throughput: {overall_speed:.2f} tokens/s")
+    print(f"Mean batch speed: {mean_speed:.2f} tokens/s")
+    print(f"Max batch speed: {max_speed:.2f} tokens/s")
+    print(f"Total tokens processed: {total_tokens}")
+    print(f"Total time elapsed: {total_time:.2f} s")
 
     # Output JSON results if specified
     if args.output_json:
         results = {
-            "elapsed_time": elapsed_time,
-            "num_requests": len(requests),
-            "total_num_tokens": total_num_tokens,
-            "requests_per_second": len(requests) / elapsed_time,
-            "tokens_per_second": total_num_tokens / elapsed_time,
+            "overall_throughput": overall_speed,
+            "mean_batch_speed": mean_speed,
+            "max_batch_speed": max_speed,
+            "total_tokens": total_tokens,
+            "total_time": total_time,
+            "batch_speeds": speeds,
         }
         with open(args.output_json, "w") as f:
             json.dump(results, f, indent=4)
@@ -534,6 +559,8 @@ if __name__ == "__main__":
                         help="Path to the speculative model for speculative decoding")
     parser.add_argument("--num-speculative-tokens", type=int, default=5,
                         help="Number of tokens to speculate in speculative decoding")
+    parser.add_argument("--batch_size", type=int, default=1,
+                        help="Batch size for processing requests")
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model
