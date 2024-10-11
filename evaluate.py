@@ -1,3 +1,6 @@
+""" run evaluation on benchmark datasets
+python evaluate.py --bench_name mt_bench --checkpoint_path checkpoints/meta-llama/llama-2-7b-chat-hf/llama-2-7b-chat --draft_checkpoint_path checkpoints/meta-llama/llama-2-7b-chat-hf/llama-2-7b-chat --speculate_k 5 --max_new_tokens 1024 \
+"""
 import json
 import time
 from pathlib import Path
@@ -21,6 +24,8 @@ MODEL_TO_TEMPLATE = {
     "mistral-7b-instruct": "mistral",
     "mixtral-8x7b-instruct": "mistral",
     "openchat-3.5": "openchat",
+    "llama-3.1": "llama-3.1",
+    "llama-3.2": "llama-3.2",
     # Add more mappings as needed
 }
 
@@ -378,6 +383,7 @@ def main(
     for i in range(warmup):
         question = questions[i]
         conv = get_conversation_template(model_template)
+        conv.messages = []
         conv.set_system_message(system_message)
 
         for j in range(len(question["turns"])):
@@ -406,6 +412,7 @@ def main(
         torch.manual_seed(0)
 
         conv = get_conversation_template(model_template)
+        conv.messages = []
         conv.set_system_message(system_message)
         
         turns = []

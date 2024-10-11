@@ -3,6 +3,7 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
+# python scripts/convert_hf_checkpoint.py --checkpoint_dir checkpoints/meta-llama/llama-2-7b-chat-hf --model_name llama-2.7b-chat
 import json
 import re
 import shutil
@@ -118,8 +119,9 @@ def convert_hf_checkpoint(
     print(f"Saving checkpoint to {checkpoint_dir / 'model.pth'}")
     torch.save(final_result, checkpoint_dir / "model.pth")
     if 'llama-3' in model_name.lower():
-        if 'llama-3.1' in model_name.lower():
-            original_dir = checkpoint_dir / "original" / "mp16"
+        # containing 3.1 and 3.2
+        if 'llama-3.' in model_name.lower():
+            original_dir = checkpoint_dir / "original"
         else:
             original_dir = checkpoint_dir / "original"
         tokenizer_model = original_dir / "tokenizer.model"
