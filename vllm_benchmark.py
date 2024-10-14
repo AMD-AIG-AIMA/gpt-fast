@@ -4,6 +4,7 @@ import json
 import random
 import time
 from typing import List, Optional, Tuple
+import os
 
 import torch
 import uvloop
@@ -87,7 +88,7 @@ def run_vllm(
     speculative_model: Optional[str] = None,
     num_speculative_tokens: int = 5,
     batch_size: int=None,
-) -> tuple:
+) -> dict:
     from vllm import LLM, SamplingParams
     llm = LLM(
         model=model,
@@ -653,4 +654,7 @@ if __name__ == "__main__":
         if args.tokenizer != args.model:
             raise ValueError("Tokenizer must be the same as the model for MII "
                              "backend.")
+    if args.output_json is not None:
+        if not os.path.exists(os.path.dirname(args.output_json)):
+            os.makedirs(os.path.dirname(args.output_json))
     main(args)
