@@ -140,7 +140,7 @@ def run_vllm(
 
     if profiling_out_folder:
         prof = profile(
-            schedule=torch.profiler.schedule(wait=5, warmup=4, active=2, repeat=1),
+            schedule=torch.profiler.schedule(wait=5, warmup=4, active=1, repeat=1),
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
             profile_memory=True,
             with_stack=True,
@@ -169,28 +169,28 @@ def run_vllm(
             }
     else:
         pbar = tqdm(total=len(requests))
-        for i in range(0, len(requests), batch_size):
-            batch = requests[i:i+batch_size]
-            batch_prompts = prompts[i:i+batch_size]
-            batch_sampling_params = sampling_params[i:i+batch_size]
-            start = time.perf_counter()
-            with prof as p:
+        with prof as p:
+            for i in range(0, len(requests), batch_size):
+                batch = requests[i:i+batch_size]
+                batch_prompts = prompts[i:i+batch_size]
+                batch_sampling_params = sampling_params[i:i+batch_size]
+                start = time.perf_counter()
                 output = llm.generate(batch_prompts, batch_sampling_params, use_tqdm=False)
+                end = time.perf_counter()
+                pbar.update(len(batch))
+                batch_time = end - start
+                for j in range(len(batch_prompts)):
+                    ind = i + j
+                    outputs[ind] = {
+                        'prompt': prompts[ind],
+                        'input_token_length': len(output[j].prompt_token_ids),
+                        'output': output[j].outputs[0].text,
+                        'output_token_length': len(output[j].outputs[0].token_ids),
+                        'time': batch_time / batch_size,
+                        'speed': len(output[j].outputs[0].token_ids) / (batch_time / batch_size )
+                    }
                 if profiling_out_folder:
                     p.step()
-            end = time.perf_counter()
-            pbar.update(len(batch))
-            batch_time = end - start
-            for j in range(len(batch_prompts)):
-                ind = i + j
-                outputs[ind] = {
-                    'prompt': prompts[ind],
-                    'input_token_length': len(output[j].prompt_token_ids),
-                    'output': output[j].outputs[0].text,
-                    'output_token_length': len(output[j].outputs[0].token_ids),
-                    'time': batch_time / batch_size,
-                    'speed': len(output[j].outputs[0].token_ids) / (batch_time / batch_size )
-                }
 
     if prof:
         prof.stop()
