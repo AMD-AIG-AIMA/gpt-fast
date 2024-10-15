@@ -5,6 +5,7 @@ import random
 import time
 from typing import List, Optional, Tuple
 import os
+from contextlib import nullcontext
 
 import torch
 import uvloop
@@ -146,14 +147,15 @@ def run_vllm(
             record_shapes=True,
             on_trace_ready=torch.profiler.tensorboard_trace_handler(profiling_out_folder),
         )
-        prof.start()
     else:
-        prof = None
+        prof = nullcontext()
 
     if batch_size is None:
         start = time.perf_counter()
-        with record_function("generate"):
+        with prof as p:
             output = llm.generate(prompts, sampling_params, use_tqdm=True)
+            if profiling_out_folder:
+                p.step()
         end = time.perf_counter()
         total_time = end - start
         for i in range(len(prompts)):
@@ -172,8 +174,10 @@ def run_vllm(
             batch_prompts = prompts[i:i+batch_size]
             batch_sampling_params = sampling_params[i:i+batch_size]
             start = time.perf_counter()
-            with record_function("generate_batch"):
+            with prof as p:
                 output = llm.generate(batch_prompts, batch_sampling_params, use_tqdm=False)
+                if profiling_out_folder:
+                    p.step()
             end = time.perf_counter()
             pbar.update(len(batch))
             batch_time = end - start
