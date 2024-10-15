@@ -88,6 +88,7 @@ def run_vllm(
     speculative_model: Optional[str] = None,
     num_speculative_tokens: int = 5,
     batch_size: int=None,
+    speculative_draft_tp: int=1,
 ) -> dict:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -115,6 +116,7 @@ def run_vllm(
         disable_async_output_proc=disable_async_output_proc,
         speculative_model=speculative_model,
         num_speculative_tokens=num_speculative_tokens if speculative_model else None,
+        speculative_draft_tensor_parallel_size=speculative_draft_tp,
     )
 
     # Add the requests to the engine.
@@ -373,7 +375,7 @@ def main(args: argparse.Namespace):
             args.gpu_memory_utilization, args.num_scheduler_steps,
             args.use_v2_block_manager, args.download_dir, args.load_format,
             args.disable_async_output_proc, args.speculative_model,
-            args.num_speculative_tokens, args.batch_size
+            args.num_speculative_tokens, args.batch_size, args.speculative_draft_tp
         ]
 
         if args.async_engine:
@@ -623,6 +625,7 @@ if __name__ == "__main__":
                         help="Number of tokens to speculate in speculative decoding")
     parser.add_argument("--batch-size", type=int, default=1,
                         help="Batch size for processing requests")
+    parser.add_argument("--speculative_draft_tp", type=int, default=1)
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model

@@ -351,10 +351,6 @@ def main(
     else:
         draft_model = None
 
-    if use_tp:
-        print("Applying tensor parallel to model ...")
-        apply_tp(model)
-
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
 
     tokenizer = get_tokenizer(checkpoint_path.parent / "tokenizer.model", checkpoint_path)

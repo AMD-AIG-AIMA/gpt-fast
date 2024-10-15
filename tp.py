@@ -64,8 +64,10 @@ def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = [
     assert style in dim_lookup
     shard_dim, size_attr = dim_lookup[style]
 
-    # ensure we can shard evenly
-    assert getattr(linear, size_attr) % world_size == 0
+    # Ensure we can shard evenly
+    if getattr(linear, size_attr) % world_size != 0:
+        raise ValueError(f"Cannot evenly shard {size_attr} ({getattr(linear, size_attr)}) across {world_size} GPUs")
+    
     def shard(x, dim):
         assert x.size(dim=dim) % world_size == 0
         return torch.tensor_split(x, world_size, dim=dim)[rank]
@@ -122,6 +124,12 @@ def _apply_tp_ffn(mlp: FeedForward) -> None:
 
 
 def _apply_tp_attn(attn: Attention) -> None:
+    world_size = _get_world_size()
+
+    # Check if dimensions are divisible by world_size
+    if attn.n_head % world_size != 0 or attn.dim % world_size != 0 or attn.n_local_heads % world_size != 0:
+        raise ValueError(f"Attention dimensions ({attn.n_head},{attn.dim}, {attn.n_local_heads}) are not divisible by {world_size} GPUs")
+
     assert hasattr(attn, "wqkv")
     assert hasattr(attn, "wo")
 
@@ -130,7 +138,6 @@ def _apply_tp_attn(attn: Attention) -> None:
     _apply_tp_linear(attn.wo, "rowwise")
 
     # overwrite
-    world_size = _get_world_size()
     attn.n_head = attn.n_head // world_size
     attn.dim = attn.dim // world_size
     attn.head_dim = attn.dim // attn.n_head
@@ -143,14 +150,23 @@ def _apply_tp_attn(attn: Attention) -> None:
 def _apply_tp_Transformer(Transformer: Transformer) -> None:
     # overwrite config before Transformer.setup_cache is called
     world_size = _get_world_size()
+    # Check if dimensions are divisible by world_size
+    if (Transformer.config.n_head % world_size != 0 or
+        Transformer.config.dim % world_size != 0 or
+        Transformer.config.n_local_heads % world_size != 0):
+        raise ValueError(f"Transformer dimensions (n_head: {Transformer.config.n_head}, dim: {Transformer.config.dim}, n_local_heads: {Transformer.config.n_local_heads}) not divisible by {world_size} GPUs")
     Transformer.config.n_head = Transformer.config.n_head // world_size
     Transformer.config.dim = Transformer.config.dim // world_size
     Transformer.config.n_local_heads = Transformer.config.n_local_heads // world_size
 
 
 def apply_tp(model: Transformer) -> None:
-    _apply_tp_Transformer(model)
-    for block in model.layers:
-        # Apply to MLP
-        _apply_tp_ffn(block.feed_forward)
-        _apply_tp_attn(block.attention)
+    try:
+        _apply_tp_Transformer(model)
+        for block in model.layers:
+            _apply_tp_ffn(block.feed_forward)
+            _apply_tp_attn(block.attention)
+    except ValueError as e:
+        print(f"Error applying tensor parallelism: {e}")
+        print("Please ensure your model dimensions are divisible by the number of GPUs.")
+        raise
