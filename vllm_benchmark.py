@@ -11,6 +11,7 @@ import uvloop
 from tqdm import tqdm
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           PreTrainedTokenizerBase)
+from torch.profiler import profile, record_function, ProfilerActivity
 
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
 from vllm.entrypoints.openai.api_server import (
@@ -89,6 +90,7 @@ def run_vllm(
     num_speculative_tokens: int = 5,
     batch_size: int=None,
     speculative_draft_tp: int=1,
+    profiling_out_folder: Optional[str] = None,
 ) -> dict:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -134,9 +136,24 @@ def run_vllm(
                 max_tokens=output_len,
             ))
     outputs = {}
+
+    if profiling_out_folder:
+        prof = profile(
+            schedule=torch.profiler.schedule(wait=5, warmup=4, active=2, repeat=1),
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            profile_memory=True,
+            with_stack=True,
+            record_shapes=True,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(profiling_out_folder),
+        )
+        prof.start()
+    else:
+        prof = None
+
     if batch_size is None:
         start = time.perf_counter()
-        output = llm.generate(prompts, sampling_params, use_tqdm=True)
+        with record_function("generate"):
+            output = llm.generate(prompts, sampling_params, use_tqdm=True)
         end = time.perf_counter()
         total_time = end - start
         for i in range(len(prompts)):
@@ -148,7 +165,6 @@ def run_vllm(
                 'time': total_time / len(prompts),
                 'speed': len(output[i].outputs[0].token_ids) / (total_time / len(prompts) )
             }
-        return outputs
     else:
         pbar = tqdm(total=len(requests))
         for i in range(0, len(requests), batch_size):
@@ -156,7 +172,8 @@ def run_vllm(
             batch_prompts = prompts[i:i+batch_size]
             batch_sampling_params = sampling_params[i:i+batch_size]
             start = time.perf_counter()
-            output = llm.generate(batch_prompts, batch_sampling_params, use_tqdm=False)
+            with record_function("generate_batch"):
+                output = llm.generate(batch_prompts, batch_sampling_params, use_tqdm=False)
             end = time.perf_counter()
             pbar.update(len(batch))
             batch_time = end - start
@@ -170,7 +187,11 @@ def run_vllm(
                     'time': batch_time / batch_size,
                     'speed': len(output[j].outputs[0].token_ids) / (batch_time / batch_size )
                 }
-        return outputs
+
+    if prof:
+        prof.stop()
+
+    return outputs
 
 
 async def run_vllm_async(
@@ -375,7 +396,8 @@ def main(args: argparse.Namespace):
             args.gpu_memory_utilization, args.num_scheduler_steps,
             args.use_v2_block_manager, args.download_dir, args.load_format,
             args.disable_async_output_proc, args.speculative_model,
-            args.num_speculative_tokens, args.batch_size, args.speculative_draft_tp
+            args.num_speculative_tokens, args.batch_size, args.speculative_draft_tp,
+            args.profiling_out_folder
         ]
 
         if args.async_engine:
@@ -626,6 +648,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=1,
                         help="Batch size for processing requests")
     parser.add_argument("--speculative_draft_tp", type=int, default=1)
+    parser.add_argument("--profiling-out-folder", type=str, default=None,
+                        help="Output folder for profiling traces")
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model
