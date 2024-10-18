@@ -43,11 +43,11 @@ for d in GPU_BANDWIDTH.keys():
     if d in device_name:
         PEAK_BANDWIDTH = GPU_BANDWIDTH[d]
         if rank == 0 or rank is None:
-            print(f"Found device {d} with peak bandwidth {PEAK_BANDWIDTH}")
+            print(f"Found device {d} with peak bandwidth {PEAK_BANDWIDTH/1e12} TB/s")
         break
 if PEAK_BANDWIDTH is None and (rank == 0 or rank is None):
     print("Device not found in the list of known devices. Please update the GPU_BANDWIDTH dictionary in evaluate.py")
-    print("Using default peak bandwidth of 2e12")
+    print("Using default peak bandwidth of 2 TB/s")
     PEAK_BANDWIDTH = 2e12
 
 default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
