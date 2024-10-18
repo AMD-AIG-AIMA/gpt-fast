@@ -5,6 +5,8 @@ from collections import defaultdict
 import atexit
 import torch
 
+from tp import _get_rank
+
 
 def get_model_size(model):
     param_size = 0
@@ -28,6 +30,7 @@ class TimeProfiler(ContextDecorator):
         self.peak_bandwidth = peak_bandwidth
         self.tokens_processed = None
         self.model_size = model_size
+        self.rank = _get_rank()
 
     def __enter__(self):
         torch.cuda.synchronize()
@@ -56,32 +59,33 @@ class TimeProfiler(ContextDecorator):
 
     @classmethod
     def print_report(cls):
-        print("\nTime Profiling Report:")
-        print("--------------------------")
-        for name in set(list(cls._timings.keys()) + list(cls._bw_utilizations.keys())):
-            times = cls._timings[name]
-            bw_utils = cls._bw_utilizations[name]
-            
-            if len(times) <= cls._num_warmup:
-                continue
+        if cls.rank == 0 or cls.rank is None:
+            print("\nTime Profiling Report:")
+            print("--------------------------")
+            for name in set(list(cls._timings.keys()) + list(cls._bw_utilizations.keys())):
+                times = cls._timings[name]
+                bw_utils = cls._bw_utilizations[name]
+                
+                if len(times) <= cls._num_warmup:
+                    continue
 
-            valid_times = times[cls._num_warmup:]
-            avg_time = sum(valid_times) / len(valid_times)
-            total_time = sum(valid_times)
-            calls = len(valid_times)
-            
-            print(f"{name}:")
-            print(f"  Total time: {total_time:.6f} seconds")
-            print(f"  Average time: {avg_time:.6f} seconds")
-            print(f"  Number of calls: {calls}")
-            print(f"  Warm-up calls: {cls._num_warmup}")
-            
-            if bw_utils:
-                valid_bw_utils = bw_utils[cls._num_warmup:]
-                avg_bw_util = sum(valid_bw_utils) / len(valid_bw_utils)
-                print(f"  Average Bandwidth Utilization: {avg_bw_util:.6f}")
-            
-            print()
+                valid_times = times[cls._num_warmup:]
+                avg_time = sum(valid_times) / len(valid_times)
+                total_time = sum(valid_times)
+                calls = len(valid_times)
+                
+                print(f"{name}:")
+                print(f"  Total time: {total_time:.6f} seconds")
+                print(f"  Average time: {avg_time:.6f} seconds")
+                print(f"  Number of calls: {calls}")
+                print(f"  Warm-up calls: {cls._num_warmup}")
+                
+                if bw_utils:
+                    valid_bw_utils = bw_utils[cls._num_warmup:]
+                    avg_bw_util = sum(valid_bw_utils) / len(valid_bw_utils)
+                    print(f"  Average Bandwidth Utilization: {avg_bw_util:.6f}")
+                
+                print()
 
 def timer_profile(func=None, *, name=None, model_size=None, peak_bandwidth=None):
     if func is None:
