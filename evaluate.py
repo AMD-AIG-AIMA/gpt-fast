@@ -9,7 +9,7 @@ import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from tqdm import tqdm
 from fastchat.model import get_conversation_template
-from tp import maybe_init_dist, apply_tp
+from tp import maybe_init_dist, _get_rank
 from model import Transformer
 from tokenizer import get_tokenizer
 import itertools
@@ -28,6 +28,27 @@ MODEL_TO_TEMPLATE = {
     "llama-3.2": "llama-3.2",
     # Add more mappings as needed
 }
+GPU_BANDWIDTH = {
+    "MI325": 6e12,
+    "MI300": 5.3e12,
+    "MI250": 1.6e12,
+    "H200": 4.8e12,
+    "H100": 3.35e12,
+    "A100": 2.039e12,
+}
+device_name = torch.cuda.get_device_name()
+PEAK_BANDWIDTH = None
+rank = _get_rank()
+for d in GPU_BANDWIDTH.keys():
+    if d in device_name:
+        PEAK_BANDWIDTH = GPU_BANDWIDTH[d]
+        if rank == 0 or rank is None:
+            print(f"Found device {d} with peak bandwidth {PEAK_BANDWIDTH}")
+        break
+if PEAK_BANDWIDTH is None and (rank == 0 or rank is None):
+    print("Device not found in the list of known devices. Please update the GPU_BANDWIDTH dictionary in evaluate.py")
+    print("Using default peak bandwidth of 2e12")
+    PEAK_BANDWIDTH = 2e12
 
 default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -105,7 +126,7 @@ def speculative_decode(
     # draft model inference sequentially
     device = cur_token.device
     orig_input_pos = torch.tensor([input_pos], dtype=torch.int64, device=cur_token.device)
-    with TimeProfiler("Speculate Decode", model_size=model_size(draft_model), peak_bandwidth=1.6e12) as profiler:
+    with TimeProfiler("Speculate Decode", model_size=model_size(draft_model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(speculate_k)
         draft_tokens, draft_probs = decode_n_tokens(draft_model, cur_token.view(1, -1), orig_input_pos.clone(), speculate_k, **sampling_kwargs)
 
@@ -113,7 +134,7 @@ def speculative_decode(
     if len(draft_tokens.shape) > 1:
         draft_tokens = draft_tokens.view(-1)
     # parallel inference on target model using draft tokens
-    with TimeProfiler("Verification", model_size=model_size(model), peak_bandwidth=1.6e12) as profiler:
+    with TimeProfiler("Verification", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
         target_logits = model_forward(
             model,
@@ -193,7 +214,7 @@ def generate(
     seq = empty
     input_pos = torch.arange(0, T, device=device)
 
-    with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=1.6e12) as profiler:
+    with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
         next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
     if is_speculative:
@@ -224,7 +245,7 @@ def generate(
         cur_token = next_token.view(batch_size, -1)
         num_new_tokens = max_new_tokens - 1
         for i in range(num_new_tokens):
-            with TimeProfiler("Vanilla Decoding", model_size=model_size(model), peak_bandwidth=1.6e12) as profiler:
+            with TimeProfiler("Vanilla Decoding", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
                 profiler.set_tokens_processed(1)
                 with sdpa_kernel([SDPBackend.MATH, SDPBackend.FLASH_ATTENTION]):
                     next_token, next_prob = decode_one_token(

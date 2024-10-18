@@ -132,7 +132,7 @@ def run_vllm(
                 n=n,
                 temperature=0.0 if use_beam_search else 1.0,
                 top_p=1.0,
-                use_beam_search=use_beam_search,
+                # use_beam_search=use_beam_search,
                 ignore_eos=True,
                 max_tokens=output_len,
             ))
@@ -192,7 +192,7 @@ def run_vllm(
                 if profiling_out_folder:
                     p.step()
 
-    if prof:
+    if profiling_out_folder:
         prof.stop()
 
     return outputs
