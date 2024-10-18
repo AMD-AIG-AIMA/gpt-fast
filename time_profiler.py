@@ -23,6 +23,7 @@ class TimeProfiler(ContextDecorator):
     _timings = defaultdict(list)
     _bw_utilizations = defaultdict(list)
     _num_warmup = 0
+    _rank = _get_rank()
     
     def __init__(self, name, model_size=None, peak_bandwidth=None):
         self.name = name
@@ -30,7 +31,7 @@ class TimeProfiler(ContextDecorator):
         self.peak_bandwidth = peak_bandwidth
         self.tokens_processed = None
         self.model_size = model_size
-        self.rank = _get_rank()
+        
 
     def __enter__(self):
         torch.cuda.synchronize()
@@ -59,7 +60,7 @@ class TimeProfiler(ContextDecorator):
 
     @classmethod
     def print_report(cls):
-        if cls.rank == 0 or cls.rank is None:
+        if cls._rank == 0 or cls._rank is None:
             print("\nTime Profiling Report:")
             print("--------------------------")
             for name in set(list(cls._timings.keys()) + list(cls._bw_utilizations.keys())):
