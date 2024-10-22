@@ -288,6 +288,12 @@ def _load_model(checkpoint_path, device, precision, use_tp):
         simple_quantizer = WeightOnlyInt4QuantHandler(model, groupsize)
         model = simple_quantizer.convert_for_runtime()
 
+    if 'fp8' in str(checkpoint_path):
+        print("Using fp8 weight-only quantization!")
+        from quantize import WeightOnlyFP8QuantHandler
+        simple_quantizer = WeightOnlyFP8QuantHandler(model)
+        model = simple_quantizer.convert_for_runtime()
+
     checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
     if "model" in checkpoint and "stories" in str(checkpoint_path):
         checkpoint = checkpoint["model"]
