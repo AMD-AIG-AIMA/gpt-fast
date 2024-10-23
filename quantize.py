@@ -3,6 +3,8 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
+# Usage:
+# python quantize.py --checkpoint_path checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth --mode int8
 import time
 from pathlib import Path
 

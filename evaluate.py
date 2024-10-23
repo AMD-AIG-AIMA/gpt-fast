@@ -279,6 +279,7 @@ def _load_model(checkpoint_path, device, precision, use_tp):
         from quantize import WeightOnlyInt8QuantHandler
         simple_quantizer = WeightOnlyInt8QuantHandler(model)
         model = simple_quantizer.convert_for_runtime()
+        precision = 'int8'
 
     if "int4" in str(checkpoint_path):
         print("Using int4 weight-only quantization!")
@@ -287,24 +288,28 @@ def _load_model(checkpoint_path, device, precision, use_tp):
         from quantize import WeightOnlyInt4QuantHandler
         simple_quantizer = WeightOnlyInt4QuantHandler(model, groupsize)
         model = simple_quantizer.convert_for_runtime()
+        precision = 'int4'
 
     if 'fp8' in str(checkpoint_path):
         print("Using fp8 weight-only quantization!")
         from quantize import WeightOnlyFP8QuantHandler
         simple_quantizer = WeightOnlyFP8QuantHandler(model)
         model = simple_quantizer.convert_for_runtime()
+        precision = 'float8_e4m3fn'
 
     checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
     if "model" in checkpoint and "stories" in str(checkpoint_path):
         checkpoint = checkpoint["model"]
     model.load_state_dict(checkpoint, assign=True)
 
+
     if use_tp:
         from tp import apply_tp
         print("Applying tensor parallel to model ...")
         apply_tp(model)
 
-    model = model.to(device=device, dtype=precision)
+    model = model.to(device=device)
+    print(f"Model dtype is: {model.output.weight.dtype}")
     return model.eval()
 
 def model_size(model):
