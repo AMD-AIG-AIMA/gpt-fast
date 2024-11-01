@@ -115,32 +115,47 @@ def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torc
 def model_forward(model, x, input_pos):
     return model(x, input_pos)
 
-def speculative_decode(
-    model: Transformer,
-    draft_model: Transformer,
-    cur_token: torch.Tensor,
-    input_pos: int,
-    speculate_k: int,
-    **sampling_kwargs
-) -> torch.Tensor:
-    # draft model inference sequentially
-    device = cur_token.device
-    orig_input_pos = torch.tensor([input_pos], dtype=torch.int64, device=cur_token.device)
-    with TimeProfiler("Speculate Decode", model_size=model_size(draft_model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
-        profiler.set_tokens_processed(speculate_k)
-        draft_tokens, draft_probs = decode_n_tokens(draft_model, cur_token.view(1, -1), orig_input_pos.clone(), speculate_k, **sampling_kwargs)
+def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
+    target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
+    draft_probs = torch.stack(draft_probs)
 
-    draft_tokens = torch.cat(draft_tokens)
-    if len(draft_tokens.shape) > 1:
-        draft_tokens = draft_tokens.view(-1)
-    # parallel inference on target model using draft tokens
-    with TimeProfiler("Verification", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
-        profiler.set_tokens_processed(1)
-        target_logits = model_forward(
-            model,
-            torch.cat([cur_token.view(1), draft_tokens]).view(1, -1),
-            torch.arange(input_pos, input_pos + speculate_k + 1, device=cur_token.device)
-        )
+    # Initialize p_i and h_i
+    p = torch.ones(speculate_k+1, device=device)
+    accept_length = 0
+    eta = torch.rand(speculate_k, device=device)
+    for i in range(speculate_k):
+        q_target = target_probs[i]
+        p_draft = draft_probs[i]
+        draft_token = draft_tokens[i]
+
+        # Calculate p_i, acceptance probability
+        p[i+1] = torch.minimum(p[i] * q_target[draft_token] / p_draft[draft_token], torch.ones(1, device=device))    
+
+        # Calculate residual distribution and h_i
+        residual = torch.maximum(p[i+1] * q_target - p_draft, torch.zeros_like(q_target))
+        residual_mass = torch.sum(residual)
+        h_i = residual_mass / (residual_mass + 1 - p[i+1])
+
+        # Acceptance step
+        if eta[i] <= h_i:
+            accept_length = i + 1
+        else:
+            continue
+
+    if accept_length == speculate_k:
+        # All draft tokens accepted, sample final token
+        last_token = multinomial_sample_one_no_sync(target_probs[-1])
+        return torch.cat([draft_tokens, last_token])
+    else:
+        # Sample from residual distribution
+        p_draft = draft_probs[accept_length]
+        q = target_probs[accept_length]
+        residual = torch.maximum(p[accept_length] * q - p_draft, torch.zeros_like(q))
+        residual = residual / residual.sum()
+        next_token = multinomial_sample_one_no_sync(residual)
+        return torch.cat([draft_tokens[:accept_length], next_token])
+
+def token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
     draft_probs = torch.stack(draft_probs)
     # q: target prob, p: draft prob
@@ -156,12 +171,6 @@ def speculative_decode(
     if rejected_locations.shape[0] == 0: # All draft tokens have been accepted
         accept_length = speculate_k + 1
         last_token = multinomial_sample_one_no_sync(target_probs[-1])
-        # fill last token into draft model
-        model_forward(
-            draft_model,
-            draft_tokens[-1].view(1, -1),
-            orig_input_pos + speculate_k,
-        )
         return torch.cat([draft_tokens, last_token])
     else:
         accept_length = rejected_locations[0].item()
@@ -172,6 +181,56 @@ def speculative_decode(
         new = new / new.sum()
         next_token = multinomial_sample_one_no_sync(new)
         return torch.cat([draft_tokens[:accept_length], next_token])
+
+
+def speculative_decode(
+    model: Transformer,
+    draft_model: Transformer,
+    cur_token: torch.Tensor,
+    input_pos: int,
+    speculate_k: int,
+    block_verify: bool = False,
+    **sampling_kwargs
+) -> torch.Tensor:
+    device = cur_token.device
+    orig_input_pos = torch.tensor([input_pos], dtype=torch.int64, device=device)
+    
+    # Get draft tokens and probabilities
+    with TimeProfiler("Speculate Decode", model_size=model_size(draft_model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
+        profiler.set_tokens_processed(speculate_k)
+        draft_tokens, draft_probs = decode_n_tokens(
+            draft_model, 
+            cur_token.view(1, -1), 
+            orig_input_pos.clone(), 
+            speculate_k, 
+            **sampling_kwargs
+        )
+
+    draft_tokens = torch.cat(draft_tokens)
+    if len(draft_tokens.shape) > 1:
+        draft_tokens = draft_tokens.view(-1)
+    # parallel inference on target model using draft tokens
+    with TimeProfiler("Verification", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
+        profiler.set_tokens_processed(1)
+        target_logits = model_forward(
+            model,
+            torch.cat([cur_token.view(1), draft_tokens]).view(1, -1),
+            torch.arange(input_pos, input_pos + speculate_k + 1, device=device)
+        )
+    
+    if not block_verify:
+        verified_tokens = token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
+    else:
+        verified_tokens = block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
+    
+    # fill last token into draft model if all speculative tokens have been accepted
+    if verified_tokens.shape[0] == speculate_k + 1:
+        model_forward(
+            draft_model,
+            draft_tokens[-1].view(1, -1),
+            orig_input_pos + speculate_k,
+        )
+    return verified_tokens
 
 @torch.no_grad()
 def generate(
@@ -184,6 +243,7 @@ def generate(
     draft_model: Transformer,
     speculate_k: Optional[int] = 8,
     callback = lambda x: x,
+    block_verify: bool = False,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
@@ -230,7 +290,7 @@ def generate(
             cur_token = next_token.view(())
 
             next_tokens = speculative_decode(
-                model, draft_model, cur_token, input_pos, speculate_k, **sampling_kwargs
+                model, draft_model, cur_token, input_pos, speculate_k, block_verify, **sampling_kwargs
             )
 
             accept_counts[len(next_tokens) - 1] += 1
@@ -359,6 +419,7 @@ def main(
     compile_prefill: bool = False,
     num_questions: Optional[int] = None,
     warmup: int = 5,
+    block_verify: bool = False,
 ):
     global print
     # Initialize distributed setup
@@ -432,6 +493,7 @@ def main(
                 draft_model=draft_model,
                 speculate_k=speculate_k,
                 callback=lambda x: x,
+                block_verify=block_verify,
             )
 
     if num_questions is not None:
@@ -468,6 +530,7 @@ def main(
                     draft_model=draft_model,
                     speculate_k=speculate_k,
                     callback=lambda x: x,
+                    block_verify=block_verify,
                 )
             end_time = time.time()
             
@@ -533,56 +596,6 @@ def main(
             print(f"Acceptance probs: {acceptance_probs}")
             print(f"Mean Accepted: {sum([(idx+1) * count for idx, count in enumerate(counts_aggregated[:-1])]) / sum(counts_aggregated[:-1]):.2f}")
 
-
-def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
-    target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
-    draft_probs = torch.stack(draft_probs)
-
-    # Initialize p_i and h_i
-    p = torch.ones(1, device=device)
-    accept_length = 0
-
-    for i in range(speculate_k):
-        q = target_probs[i]
-        p_draft = draft_probs[i]
-
-        # Calculate p_i
-        p_i = torch.minimum(p * q / p_draft, torch.ones_like(p))
-
-        # Calculate h_i
-        residual_mass = torch.sum(torch.maximum(p * q - p_draft, torch.zeros_like(p)))
-        h_i = residual_mass / (residual_mass + 1 - p)
-
-        # Acceptance step
-        if torch.rand(1, device=device) <= h_i:
-            accept_length = i + 1
-            p = p_i[draft_tokens[i]]
-        else:
-            break
-
-    if accept_length == speculate_k:
-        # All draft tokens have been accepted
-        accept_length += 1
-        last_token = multinomial_sample_one_no_sync(target_probs[-1])
-
-        # fill last token into draft model
-        model_forward(
-            draft_model,
-            draft_tokens[-1].view(1, -1),
-            orig_input_pos + speculate_k,
-        )
-
-        return torch.cat([draft_tokens, last_token])
-    else:
-        # Sample from residual distribution
-        p_draft = draft_probs[accept_length]
-        q = target_probs[accept_length]
-        new = torch.maximum(p * q - p_draft, torch.zeros_like(q))
-        new = new / new.sum()
-        next_token = multinomial_sample_one_no_sync(new)
-
-        return torch.cat([draft_tokens[:accept_length], next_token])
-
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Evaluate model on benchmark datasets.')
@@ -598,8 +611,9 @@ if __name__ == '__main__':
     parser.add_argument('--compile_prefill', action='store_true', help='Whether to compile the prefill')
     parser.add_argument('--num_questions', type=int, default=None, help='Number of questions to evaluate')
     parser.add_argument('--warmup', type=int, default=5, help='Number of warmup steps')
+    parser.add_argument('--block_verify', action='store_true', help='Whether to verify with block acceptance probability')
     
     args = parser.parse_args()
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
          args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
-         args.warmup)
+         args.warmup, args.block_verify)
