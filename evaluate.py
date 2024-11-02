@@ -118,6 +118,8 @@ def model_forward(model, x, input_pos):
 def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
     draft_probs = torch.stack(draft_probs)
+    if len(draft_probs.shape) > 2:
+        draft_probs = draft_probs.squeeze(1)
 
     # Initialize p_i and h_i
     p = torch.ones(speculate_k+1, device=device)
@@ -189,7 +191,7 @@ def speculative_decode(
     cur_token: torch.Tensor,
     input_pos: int,
     speculate_k: int,
-    block_verify: bool = False,
+    do_block_verify: bool = False,
     **sampling_kwargs
 ) -> torch.Tensor:
     device = cur_token.device
@@ -218,10 +220,12 @@ def speculative_decode(
             torch.arange(input_pos, input_pos + speculate_k + 1, device=device)
         )
     
-    if not block_verify:
-        verified_tokens = token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
+    if not do_block_verify:
+        with TimeProfiler("Token Verify"):
+            verified_tokens = token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
     else:
-        verified_tokens = block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
+        with TimeProfiler("Block Verify"):
+            verified_tokens = block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
     
     # fill last token into draft model if all speculative tokens have been accepted
     if verified_tokens.shape[0] == speculate_k + 1:
@@ -243,7 +247,7 @@ def generate(
     draft_model: Transformer,
     speculate_k: Optional[int] = 8,
     callback = lambda x: x,
-    block_verify: bool = False,
+    do_block_verify: bool = False,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
@@ -290,7 +294,7 @@ def generate(
             cur_token = next_token.view(())
 
             next_tokens = speculative_decode(
-                model, draft_model, cur_token, input_pos, speculate_k, block_verify, **sampling_kwargs
+                model, draft_model, cur_token, input_pos, speculate_k, do_block_verify, **sampling_kwargs
             )
 
             accept_counts[len(next_tokens) - 1] += 1
@@ -368,7 +372,7 @@ def _load_model(checkpoint_path, device, precision, use_tp):
         print("Applying tensor parallel to model ...")
         apply_tp(model)
 
-    model = model.to(device=device)
+    model = model.to(device=device, dtype=precision)
     print(f"Model dtype is: {model.output.weight.dtype}")
     return model.eval()
 
@@ -419,7 +423,7 @@ def main(
     compile_prefill: bool = False,
     num_questions: Optional[int] = None,
     warmup: int = 5,
-    block_verify: bool = False,
+    do_block_verify: bool = False,
 ):
     global print
     # Initialize distributed setup
@@ -493,7 +497,7 @@ def main(
                 draft_model=draft_model,
                 speculate_k=speculate_k,
                 callback=lambda x: x,
-                block_verify=block_verify,
+                do_block_verify=do_block_verify,
             )
 
     if num_questions is not None:
@@ -530,7 +534,7 @@ def main(
                     draft_model=draft_model,
                     speculate_k=speculate_k,
                     callback=lambda x: x,
-                    block_verify=block_verify,
+                    do_block_verify=do_block_verify,
                 )
             end_time = time.time()
             
@@ -611,9 +615,9 @@ if __name__ == '__main__':
     parser.add_argument('--compile_prefill', action='store_true', help='Whether to compile the prefill')
     parser.add_argument('--num_questions', type=int, default=None, help='Number of questions to evaluate')
     parser.add_argument('--warmup', type=int, default=5, help='Number of warmup steps')
-    parser.add_argument('--block_verify', action='store_true', help='Whether to verify with block acceptance probability')
+    parser.add_argument('--do_block_verify', action='store_true', help='Whether to verify with block acceptance probability')
     
     args = parser.parse_args()
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
          args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
-         args.warmup, args.block_verify)
+         args.warmup, args.do_block_verify)
