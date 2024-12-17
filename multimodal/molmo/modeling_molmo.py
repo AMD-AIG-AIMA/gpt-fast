@@ -1449,13 +1449,13 @@ class ModuleType(str, Enum):
 
 
 def init_weights(
-    config: FullMolmoConfig,
-    module: Union[nn.Linear, nn.Embedding],
-    d: Optional[int] = None,
-    layer_id: Optional[int] = None,
-    std_factor: float = 1.0,
-    type_of_module: Optional[ModuleType] = None,
-) -> None:
+        config: FullMolmoConfig,
+        module: Union[nn.Linear, nn.Embedding],
+        d: Optional[int] = None,
+        layer_id: Optional[int] = None,
+        std_factor: float = 1.0,
+        type_of_module: Optional[ModuleType] = None,
+    ) -> None:
     d = d if d is not None else config.d_model
     std = config.init_std * std_factor
     if config.init_cutoff_factor is not None:
