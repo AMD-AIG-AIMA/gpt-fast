@@ -26,6 +26,7 @@ MODEL_TO_TEMPLATE = {
     "openchat-3.5": "openchat",
     "llama-3.1": "llama-3.1",
     "llama-3.2": "llama-3.2",
+    "qwen2": "qwen2",
     # Add more mappings as needed
 }
 GPU_BANDWIDTH = {
@@ -330,7 +331,8 @@ def generate(
 def encode_tokens(tokenizer, string, bos=True, device=default_device):
     tokens = tokenizer.encode(string)
     if bos:
-        tokens = [tokenizer.bos_id()] + tokens
+        if tokenizer.bos_id() is not None:
+            tokens = [tokenizer.bos_id()] + tokens
     return torch.tensor(tokens, dtype=torch.int, device=device)
 
 def _load_model(checkpoint_path, device, precision, use_tp):
@@ -468,7 +470,7 @@ def main(
     results = []
     speeds = []
     
-    model_template = get_model_template(checkpoint_path.name)
+    model_template = get_model_template(checkpoint_path.parent.name)
     
     system_message = ("You are a helpful, respectful and honest assistant. Always answer as helpfully as possible. ")
     
@@ -554,7 +556,7 @@ def main(
             generated_text = generated_text.strip()
             
             walltime = end_time - start_time
-            tokens_generated = len(output_ids) - len(encoded)
+            tokens_generated = len(output[0]) - len(encoded)
             speed = tokens_generated / walltime
             
             turns.append(generated_text)

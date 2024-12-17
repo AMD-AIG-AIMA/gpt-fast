@@ -93,6 +93,32 @@ class TiktokenWrapper(TokenizerInterface):
 
     def eos_id(self):
         return self._eos_id
+    
+class HuggingFaceTokenizerWrapper(TokenizerInterface):
+    """
+    Wrapper for Hugging Face tokenizer.
+    """
+
+    def __init__(self, model_name_or_path):
+        super().__init__(model_name_or_path)
+        from transformers import AutoTokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(str(model_name_or_path))
+
+    def encode(self, text):
+        # Encode the text using the Hugging Face tokenizer
+        return self.tokenizer.encode(text, add_special_tokens=True)
+
+    def decode(self, tokens):
+        # Decode the tokens back to text
+        return self.tokenizer.decode(tokens, skip_special_tokens=True)
+
+    def bos_id(self):
+        # Return the ID for the beginning of sequence token
+        return self.tokenizer.bos_token_id
+
+    def eos_id(self):
+        # Return the ID for the end of sequence token
+        return self.tokenizer.eos_token_id
 
 def get_tokenizer(tokenizer_model_path, model_name):
     """
@@ -108,5 +134,7 @@ def get_tokenizer(tokenizer_model_path, model_name):
 
     if "llama-3" in str(model_name).lower():
         return TiktokenWrapper(tokenizer_model_path)
+    elif 'qwen' in str(model_name).lower():
+        return HuggingFaceTokenizerWrapper(tokenizer_model_path.parent)
     else:
         return SentencePieceWrapper(tokenizer_model_path)

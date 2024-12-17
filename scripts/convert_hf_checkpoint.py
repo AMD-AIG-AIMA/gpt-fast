@@ -60,8 +60,11 @@ def convert_hf_checkpoint(
 
     weight_map = {
         "model.embed_tokens.weight": "tok_embeddings.weight",
+        "model.layers.{}.self_attn.q_proj.bias": "layers.{}.attention.wq.bias",
         "model.layers.{}.self_attn.q_proj.weight": "layers.{}.attention.wq.weight",
+        "model.layers.{}.self_attn.k_proj.bias": "layers.{}.attention.wk.bias",
         "model.layers.{}.self_attn.k_proj.weight": "layers.{}.attention.wk.weight",
+        "model.layers.{}.self_attn.v_proj.bias": "layers.{}.attention.wv.bias",
         "model.layers.{}.self_attn.v_proj.weight": "layers.{}.attention.wv.weight",
         "model.layers.{}.self_attn.o_proj.weight": "layers.{}.attention.wo.weight",
         'model.layers.{}.self_attn.rotary_emb.inv_freq': None,
@@ -76,12 +79,20 @@ def convert_hf_checkpoint(
     bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
 
     def permute(w, n_head):
-        dim = config.dim
-        return (
-            w.view(n_head, 2, config.head_dim // 2, dim)
-            .transpose(1, 2)
-            .reshape(config.head_dim * n_head, dim)
-        )
+        if len(w.shape) == 1:
+            # For bias
+            return (
+                w.unsqueeze(1).view(n_head, 2, config.head_dim // 2, 1)
+                .transpose(1, 2)
+                .reshape(config.head_dim * n_head, 1).squeeze(1)
+            )
+        else:
+            dim = config.dim
+            return (
+                w.view(n_head, 2, config.head_dim // 2, dim)
+                .transpose(1, 2)
+                .reshape(config.head_dim * n_head, dim)
+            )
 
     merged_result = {}
     for file in sorted(bin_files):
@@ -92,6 +103,8 @@ def convert_hf_checkpoint(
            state_dict = torch.load(str(file), map_location="cpu", mmap=True, weights_only=True)
            merged_result.update(state_dict)
     final_result = {}
+    if 'lm_head.weight' not in merged_result:
+        merged_result['lm_head.weight'] = merged_result['model.embed_tokens.weight']
     for key, value in merged_result.items():
         if "layers" in key:
             abstract_key = re.sub(r'(\d+)', '{}', key)

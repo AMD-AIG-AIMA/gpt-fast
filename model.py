@@ -31,6 +31,7 @@ class ModelArgs:
     rope_base: float = 10000
     norm_eps: float = 1e-5
     rope_scaling: Optional[dict] = None
+    wqkv_bias: Optional[bool] = False
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -80,9 +81,12 @@ transformer_configs = {
     "llama-3.1-405b": dict(block_size=131072, n_layer=126, n_head=128, n_local_heads=8, dim=16384, intermediate_size=53248, vocab_size=128256, rope_base=500000,
         rope_scaling=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_position_embeddings=8192),
     ),
-    "Llama-3.2-1B-Instruct": dict(block_size=131072, n_layer=16, n_head=32, n_local_heads=8, dim=2048, intermediate_size=8192, vocab_size=128256,
+    "Llama-3.2-1B-instruct": dict(block_size=131072, n_layer=16, n_head=32, n_local_heads=8, dim=2048, intermediate_size=8192, vocab_size=128256,
         rope_base=500000.0, rope_scaling=dict(factor=32.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_position_embeddings=8192, rope_type="llama3"),
         norm_eps=1e-5, head_dim=64
+    ),
+    "Qwen2-0.5B-Instruct":dict(block_size=8192, n_layer=24, n_head=14, n_local_heads=2, dim=896, intermediate_size=4864, vocab_size=151936,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=64, wqkv_bias=True,
     ),
 }
 
@@ -176,7 +180,7 @@ class Attention(nn.Module):
 
         total_head_dim = (config.n_head + 2 * config.n_local_heads) * config.head_dim
         # key, query, value projections for all heads, but in a batch
-        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=False)
+        self.wqkv = nn.Linear(config.dim, total_head_dim, bias=getattr(config, "wqkv_bias", False))
         self.wo = nn.Linear(config.dim, config.dim, bias=False)
         self.kv_cache = None
 
