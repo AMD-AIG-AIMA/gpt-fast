@@ -88,6 +88,9 @@ transformer_configs = {
     "Qwen2-0.5B-Instruct":dict(block_size=8192, n_layer=24, n_head=14, n_local_heads=2, dim=896, intermediate_size=4864, vocab_size=151936,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=64, wqkv_bias=True,
     ),
+    "Qwen2-7B-Instruct":dict(block_size=131072, n_layer=28, n_head=28, n_local_heads=4, dim=3584, intermediate_size=18944, vocab_size=152064,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True,
+    ),
 }
 
 class KVCache(nn.Module):

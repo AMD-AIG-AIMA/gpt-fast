@@ -179,6 +179,9 @@ def token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, 
         accept_length = rejected_locations[0].item()
         p = draft_probs[accept_length]
         q = target_probs[accept_length]
+        if p.shape[0] != q.shape[0]:
+            q = q[:p.shape[0]]
+            q /= q.sum(dim=-1, keepdim=True)
         new = q - p
         new = torch.where(new > 0, new, 0.0)
         new = new / new.sum()
