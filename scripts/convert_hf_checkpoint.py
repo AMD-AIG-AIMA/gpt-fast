@@ -105,7 +105,13 @@ def convert_hf_checkpoint(
     final_result = {}
     if 'lm_head.weight' not in merged_result:
         merged_result['lm_head.weight'] = merged_result['model.embed_tokens.weight']
+    if "llava" in model_name.lower():
+        save_llava_vision_parts(merged_result, checkpoint_dir)
     for key, value in merged_result.items():
+        if "llava" in model_name.lower() and key.startswith(
+            ("model.vision_tower", "model.mm_projector", "model.image_newline")
+        ):
+            continue  # Skip these keys for final_result
         if "layers" in key:
             abstract_key = re.sub(r'(\d+)', '{}', key)
             layer_num = re.search(r'\d+', key).group(0)
@@ -180,7 +186,22 @@ def create_simple_index_file(checkpoint_dir: Path):
     print(f"Created index file: {index_file}")
     return index_file
         
-    # Create a simple index
+def save_llava_vision_parts(merged_result, checkpoint_dir):
+    parts = [
+        "vision_tower",
+        "mm_projector",
+        "image_newline"]
+    vision_modules = {}
+    for key, value in merged_result.items():
+        for part in parts:
+            if key.startswith(f"model.{part}"):
+                # getting the model. out of the key
+                vision_modules[key[6:]] = value
+                break
+ 
+    file_path = checkpoint_dir / "vision_modules.pth"
+    torch.save(vision_modules, file_path)
+    print(f"Saved vision_modules checkpoint to {file_path}")
 
 if __name__ == '__main__':
     import argparse

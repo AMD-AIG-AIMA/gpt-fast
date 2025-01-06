@@ -13,6 +13,9 @@ from torch import Tensor
 from torch.nn import functional as F
 
 
+from multimodal.mm_config import MultimodalModelArgs
+
+
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
@@ -31,7 +34,8 @@ class ModelArgs:
     rope_base: float = 10000
     norm_eps: float = 1e-5
     rope_scaling: Optional[dict] = None
-    wqkv_bias: Optional[bool] = False
+    wqkv_bias: Optional[bool] = False,
+    mm_config: Optional[MultimodalModelArgs] = None
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -91,6 +95,12 @@ transformer_configs = {
     "Qwen2-7B-Instruct":dict(block_size=131072, n_layer=28, n_head=28, n_local_heads=4, dim=3584, intermediate_size=18944, vocab_size=152064,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True,
     ),
+    "llava-onevision-qwen2-7b-si":dict(block_size=131072, n_layer=28, n_head=28, n_local_heads=4, dim=3584, intermediate_size=18944, vocab_size=152064,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("llava-onevision-qwen2-7b-si")
+    ),
+    "llava-onevision-qwen2-0.5b-si":dict(block_size=8192, n_layer=24, n_head=14, n_local_heads=2, dim=896, intermediate_size=4864, vocab_size=151936,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=64, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("llava-onevision-qwen2-0.5b-si")
+    ),
 }
 
 class KVCache(nn.Module):
@@ -145,11 +155,14 @@ class Transformer(nn.Module):
         self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype, self.config.rope_scaling)
         self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
 
-    def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
+    def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None, embedded=False) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
-        x = self.tok_embeddings(idx)
+        if not embedded:
+            x = self.tok_embeddings(idx)
+        else:
+            x = idx
 
         for i, layer in enumerate(self.layers):
             x = layer(x, input_pos, freqs_cis, mask)

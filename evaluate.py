@@ -9,11 +9,15 @@ import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from tqdm import tqdm
 from fastchat.model import get_conversation_template
+import itertools
+from typing import Optional, Tuple, Union
+
 from tp import maybe_init_dist, _get_rank
 from model import Transformer
 from tokenizer import get_tokenizer
-import itertools
-from typing import Optional, Tuple, Union
+from multimodal.llava.builder import VisionModule
+from multimodal.llava.preprocessing import embed_tokens_multimodal
+
 from time_profiler import TimeProfiler
 TimeProfiler.set_warm_up(5)
 
@@ -53,12 +57,30 @@ if PEAK_BANDWIDTH is None and (rank == 0 or rank is None):
 
 default_device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-def load_benchmark_data(bench_name):
-    data_path = Path(f"./data/{bench_name}/question.jsonl")
-    questions = []
-    with open(data_path, 'r') as f:
-        for line in f:
-            questions.append(json.loads(line.strip()))
+def load_benchmark_data(bench_name, bench_args=None):
+    if bench_name in ["mt_bench", "human_eval"]:
+        data_path = Path(f"./data/{bench_name}/question.jsonl")
+        questions = []
+        with open(data_path, 'r') as f:
+            for line in f:
+                questions.append(json.loads(line.strip()))
+    elif bench_name in ['MMMU']:
+        from datasets import load_dataset
+        categories = getattr(bench_args, 'categories', ['Design'])
+        split = getattr(bench_args, 'split', 'dev')
+        questions = []
+        for cat in categories:
+            dataset =  load_dataset("MMMU/MMMU", cat)[split]
+            for i in range(len(dataset)):
+                question = {}
+                question['turns'] = [dataset[i]['question']]
+                question['images'] = []
+                for j in range(1, 8):
+                    if dataset[i][f'image_{j}'] is not None:
+                        question['images'].append(dataset[i][f'image_{j}'])
+                    else:
+                        break
+                questions.append(question)
     return questions
 
 def get_model_template(model_name):
@@ -86,9 +108,9 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     idx_next = multinomial_sample_one_no_sync(probs)
     return idx_next, probs
 
-def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
+def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, embedded: bool=False, **sampling_kwargs) -> torch.Tensor:
     # input_pos: [B, S]
-    logits = model(x, input_pos)
+    logits = model(x, input_pos, embedded=embedded)
     return sample(logits, **sampling_kwargs)[0]
 
 def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -252,6 +274,9 @@ def generate(
     speculate_k: Optional[int] = 8,
     callback = lambda x: x,
     do_block_verify: bool = False,
+    multimodal: bool = False,
+    embedded: Optional[torch.Tensor] = None,
+    draft_embedded: Optional[torch.Tensor] = None,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
@@ -260,12 +285,13 @@ def generate(
 
     is_speculative = draft_model is not None
     # create an empty tensor of the expected final shape and fill in the current tokens
-    T = prompt.size(-1)
-    T_new = T + max_new_tokens
+    T = prompt.size(-1)  # Text token length
+    T_embed = embedded.size(1) if multimodal else T  # Full embedding sequence length
+    T_new = T + max_new_tokens  # New text token length
     if interactive:
         max_seq_length = 350
     else:
-        max_seq_length = min(T_new, model.config.block_size)
+        max_seq_length = min(T_embed + max_new_tokens, model.config.block_size)
 
     device, dtype = prompt.device, prompt.dtype
     max_seq_length = max_seq_length + speculate_k + 1 if is_speculative else max_seq_length
@@ -280,16 +306,22 @@ def generate(
     prompt = prompt.view(1, -1).repeat(batch_size, 1)
     empty[:, :T] = prompt
     seq = empty
-    input_pos = torch.arange(0, T, device=device)
+    input_pos = torch.arange(0, T_embed, device=device)
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
-        next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
-    if is_speculative:
-        prefill(draft_model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs)
+        if multimodal:
+            next_token = prefill(model, embedded, input_pos, embedded=True, **sampling_kwargs).clone()
+        else:
+            next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
+        if is_speculative:
+            if draft_embedded is not None:
+                next_token = prefill(draft_model, draft_embedded, input_pos, embedded=True, **sampling_kwargs)
+            else:
+                prefill(draft_model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs)
     seq[:, T] = next_token.squeeze()
 
-    input_pos = torch.tensor([T], device=device, dtype=torch.int)
+    input_pos = torch.tensor([T_embed], device=device, dtype=torch.int)
     accept_counts = [0] * (speculate_k + 1)
 
     if is_speculative:
@@ -442,16 +474,27 @@ def main(
     print(f"Using device={device}")
     precision = torch.bfloat16
     is_speculative = draft_checkpoint_path is not None
-
+    
     print("Loading model ...")
     t0 = time.time()
     model = _load_model(checkpoint_path, device, precision, use_tp)
+    multimodal = getattr(model.config, "mm_config", None) is not None
+    if multimodal:
+        vision_modules = VisionModule(model.config.mm_config, dtype=torch.bfloat16)
+    else:
+        vision_modules = None
 
     if is_speculative:
         print(f"Loading draft model from {draft_checkpoint_path}")
         draft_model = _load_model(draft_checkpoint_path, device, torch.bfloat16, use_tp=False)
+        draft_multimodal = hasattr(draft_model.config, "mm_config")
+        if draft_multimodal:
+            draft_vision_modules = VisionModule(model.config.mm_config, dtype=torch.bfloat16)
+        else:
+            draft_vision_modules = None
     else:
         draft_model = None
+        draft_vision_modules = None
 
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
 
@@ -476,11 +519,12 @@ def main(
     model_template = get_model_template(checkpoint_path.parent.name)
     
     system_message = ("You are a helpful, respectful and honest assistant. Always answer as helpfully as possible. ")
+    conv = get_conversation_template(model_template)
     
     # Warmup calls
+    # TODO: For multimodal models, we need to warmup the vision modules as well, if we compile them
     for i in range(warmup):
         question = questions[i]
-        conv = get_conversation_template(model_template)
         conv.messages = []
         conv.set_system_message(system_message)
 
@@ -509,8 +553,6 @@ def main(
         questions = questions[:num_questions]
     for question in tqdm(questions):
         torch.manual_seed(0)
-
-        conv = get_conversation_template(model_template)
         conv.messages = []
         conv.set_system_message(system_message)
         
@@ -524,7 +566,25 @@ def main(
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
             
-            encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
+            if not multimodal:
+                encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
+                embedded = None
+                draft_embedded = None
+            else:
+                with torch.inference_mode():
+                    encoded, embedded = embed_tokens_multimodal(
+                        prompt=prompt, tokenizer=tokenizer, config=model.config.mm_config,
+                        device=device, images=question["images"], vision_modules=vision_modules,
+                        embed_tokens=model.tok_embeddings, dtype=torch.bfloat16
+                    )
+                    if is_speculative:
+                        _, draft_embedded = embed_tokens_multimodal(
+                            prompt=prompt, tokenizer=tokenizer, config=draft_model.config.mm_config,
+                            device=device, images=question["images"], vision_modules=draft_vision_modules,
+                            embed_tokens=draft_model.tok_embeddings, dtype=torch.bfloat16
+                        )
+                    else:
+                        draft_embedded = None
             
             start_time = time.time()
             with TimeProfiler("generate"):
@@ -540,6 +600,9 @@ def main(
                     speculate_k=speculate_k,
                     callback=lambda x: x,
                     do_block_verify=do_block_verify,
+                    multimodal=multimodal,
+                    embedded=embedded,
+                    draft_embedded=draft_embedded
                 )
             end_time = time.time()
             
