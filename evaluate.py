@@ -19,7 +19,7 @@ from multimodal.llava.builder import VisionModule
 from multimodal.llava.preprocessing import embed_tokens_multimodal
 
 from time_profiler import TimeProfiler
-TimeProfiler.set_warm_up(5)
+TimeProfiler.set_warm_up(0)
 
 MODEL_TO_TEMPLATE = {
     "llama-2-7b-chat": "llama-2-chat",
@@ -65,6 +65,7 @@ def load_benchmark_data(bench_name, bench_args=None):
             for line in f:
                 questions.append(json.loads(line.strip()))
     elif bench_name in ['MMMU']:
+        # A multimodal benchmark dataset
         from datasets import load_dataset
         categories = getattr(bench_args, 'categories', ['Design'])
         split = getattr(bench_args, 'split', 'dev')
@@ -81,6 +82,8 @@ def load_benchmark_data(bench_name, bench_args=None):
                     else:
                         break
                 questions.append(question)
+    else:
+        raise ValueError(f"Unknown benchmark name: {bench_name}")
     return questions
 
 def get_model_template(model_name):
@@ -282,7 +285,8 @@ def generate(
     """
     Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
     """
-
+    if multimodal:
+        assert embedded is not None, "Must provide embedded input for multimodal models"
     is_speculative = draft_model is not None
     # create an empty tensor of the expected final shape and fill in the current tokens
     T = prompt.size(-1)  # Text token length
@@ -472,7 +476,7 @@ def main(
             print = lambda *args, **kwargs: None
 
     print(f"Using device={device}")
-    precision = torch.bfloat16
+    precision = torch.float16
     is_speculative = draft_checkpoint_path is not None
     
     print("Loading model ...")
@@ -480,7 +484,12 @@ def main(
     model = _load_model(checkpoint_path, device, precision, use_tp)
     multimodal = getattr(model.config, "mm_config", None) is not None
     if multimodal:
-        vision_modules = VisionModule(model.config.mm_config, dtype=torch.bfloat16)
+        torch.set_default_dtype(torch.float16)
+        torch.set_default_device(device)
+        vision_checkpoints = str(checkpoint_path.parent / "vision_modules.pth")
+        vision_modules = VisionModule(model.config.mm_config, dtype=torch.float16, checkpoint_path=vision_checkpoints)
+        vision_modules.requires_grad_(False) 
+        vision_modules.eval()
     else:
         vision_modules = None
 
@@ -489,7 +498,9 @@ def main(
         draft_model = _load_model(draft_checkpoint_path, device, torch.bfloat16, use_tp=False)
         draft_multimodal = hasattr(draft_model.config, "mm_config")
         if draft_multimodal:
-            draft_vision_modules = VisionModule(model.config.mm_config, dtype=torch.bfloat16)
+            draft_vision_modules = VisionModule(model.config.mm_config, dtype=torch.float16)
+            vision_modules.requires_grad_(False) 
+            draft_vision_modules.eval()
         else:
             draft_vision_modules = None
     else:
@@ -571,20 +582,21 @@ def main(
                 embedded = None
                 draft_embedded = None
             else:
-                with torch.inference_mode():
-                    encoded, embedded = embed_tokens_multimodal(
-                        prompt=prompt, tokenizer=tokenizer, config=model.config.mm_config,
-                        device=device, images=question["images"], vision_modules=vision_modules,
-                        embed_tokens=model.tok_embeddings, dtype=torch.bfloat16
-                    )
-                    if is_speculative:
-                        _, draft_embedded = embed_tokens_multimodal(
-                            prompt=prompt, tokenizer=tokenizer, config=draft_model.config.mm_config,
-                            device=device, images=question["images"], vision_modules=draft_vision_modules,
-                            embed_tokens=draft_model.tok_embeddings, dtype=torch.bfloat16
+                with TimeProfiler("Embedding"):
+                    with torch.inference_mode():
+                        encoded, embedded = embed_tokens_multimodal(
+                            prompt=prompt, tokenizer=tokenizer, config=model.config.mm_config,
+                            device=device, images=question["images"], vision_modules=vision_modules,
+                            embed_tokens=model.tok_embeddings, dtype=torch.float16
                         )
-                    else:
-                        draft_embedded = None
+                        if is_speculative:
+                            _, draft_embedded = embed_tokens_multimodal(
+                                prompt=prompt, tokenizer=tokenizer, config=draft_model.config.mm_config,
+                                device=device, images=question["images"], vision_modules=draft_vision_modules,
+                                embed_tokens=draft_model.tok_embeddings, dtype=torch.bfloat16
+                            )
+                        else:
+                            draft_embedded = None
             
             start_time = time.time()
             with TimeProfiler("generate"):

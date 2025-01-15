@@ -156,11 +156,16 @@ class VisionModule(nn.Module):
         self.config = config
         self.delay_load = getattr(config, "delay_load", False)
         self.vision_tower = build_vision_tower(config, delay_load=self.delay_load)
-        self.vision_resampler = build_vision_resampler(config, vision_tower=self.vision_tower).to(dtype=dtype)
-        self.mm_projector = build_vision_projector(config, vision_cfg=self.vision_tower).to(dtype=dtype)
+        self.vision_resampler = build_vision_resampler(config, vision_tower=self.vision_tower)
+        self.mm_projector = build_vision_projector(config, vision_cfg=self.vision_tower)
         self.image_newline = None
         if "unpad" in getattr(config, "mm_patch_merge_type", ""):
             self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=dtype))
+
+        if checkpoint_path is not None:
+            self.load_state_dict(torch.load(checkpoint_path))
+
+        return
 
     def forward(self, x):
         # each module has its own forward method
