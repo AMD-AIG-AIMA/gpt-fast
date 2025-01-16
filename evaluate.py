@@ -305,7 +305,8 @@ def generate(
             draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
 
     # create an empty tensor of the expected final shape and fill in the current tokens
-    empty = torch.empty(batch_size, T_new, dtype=dtype, device=device)
+    text_seq_len = T_new if not speculate_k else T_new + speculate_k + 1
+    empty = torch.empty(batch_size, text_seq_len, dtype=dtype, device=device)
     # We are just making the same prompt for every batch
     prompt = prompt.view(1, -1).repeat(batch_size, 1)
     empty[:, :T] = prompt
@@ -320,7 +321,7 @@ def generate(
             next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
         if is_speculative:
             if draft_embedded is not None:
-                next_token = prefill(draft_model, draft_embedded, input_pos, embedded=True, **sampling_kwargs)
+                prefill(draft_model, draft_embedded, input_pos, embedded=True, **sampling_kwargs)
             else:
                 prefill(draft_model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs)
     seq[:, T] = next_token.squeeze()
@@ -330,7 +331,8 @@ def generate(
 
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
-        while input_pos < T_new - 1:
+        max_pos = max_seq_length - 1 - (speculate_k + 1)
+        while input_pos < max_pos:
             cur_token = next_token.view(())
 
             next_tokens = speculative_decode(
@@ -338,12 +340,18 @@ def generate(
             )
 
             accept_counts[len(next_tokens) - 1] += 1
-            num_added = min(T_new - input_pos - 1, len(next_tokens))
-            seq[:,input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
-            for i in next_tokens[: num_added,]:
-                callback(i)
+            num_added = min(max_seq_length - input_pos - 1, len(next_tokens))
+            if not multimodal:
+                seq[:,input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
+            else:
+                text_input_pos = input_pos - T_embed + T + 1
+                seq[:, text_input_pos : text_input_pos + num_added] = next_tokens[: num_added]
+            # for i in next_tokens[: num_added,]:
+            #     callback(i)
             input_pos = input_pos + num_added
             next_token = next_tokens[-1]
+        text_input_pos = input_pos - T_embed + T + 1
+        seq = seq[:, :text_input_pos]
     else:
         new_tokens, new_probs = [], []
         cur_token = next_token.view(batch_size, -1)
@@ -357,10 +365,11 @@ def generate(
                     )
                     input_pos += 1
                     new_tokens.append(next_token.clone())
-                    callback(new_tokens[-1])
+                    # callback(new_tokens[-1])
                     new_probs.append(next_prob.clone())
                     cur_token = next_token.clone()
-        seq[:, T + 1:] = torch.cat(new_tokens, dim=-1)
+        end = len(new_tokens) + T +1
+        seq[:, T + 1:end] = torch.cat(new_tokens, dim=-1)
 
     generate_stats = {
         'accept_counts': accept_counts
@@ -482,12 +491,13 @@ def main(
     print("Loading model ...")
     t0 = time.time()
     model = _load_model(checkpoint_path, device, precision, use_tp)
+    model.requires_grad_(False) 
     multimodal = getattr(model.config, "mm_config", None) is not None
     if multimodal:
-        torch.set_default_dtype(torch.float16)
+        torch.set_default_dtype(precision)
         torch.set_default_device(device)
         vision_checkpoints = str(checkpoint_path.parent / "vision_modules.pth")
-        vision_modules = VisionModule(model.config.mm_config, dtype=torch.float16, checkpoint_path=vision_checkpoints)
+        vision_modules = VisionModule(model.config.mm_config, dtype=precision, checkpoint_path=vision_checkpoints)
         vision_modules.requires_grad_(False) 
         vision_modules.eval()
     else:
@@ -495,11 +505,12 @@ def main(
 
     if is_speculative:
         print(f"Loading draft model from {draft_checkpoint_path}")
-        draft_model = _load_model(draft_checkpoint_path, device, torch.bfloat16, use_tp=False)
+        draft_model = _load_model(draft_checkpoint_path, device, precision, use_tp=False)
         draft_multimodal = hasattr(draft_model.config, "mm_config")
         if draft_multimodal:
-            draft_vision_modules = VisionModule(model.config.mm_config, dtype=torch.float16)
-            vision_modules.requires_grad_(False) 
+            draft_vision_checkpoints = str(draft_checkpoint_path.parent / "vision_modules.pth")
+            draft_vision_modules = VisionModule(draft_model.config.mm_config, dtype=precision,checkpoint_path=draft_vision_checkpoints)
+            draft_vision_modules.requires_grad_(False) 
             draft_vision_modules.eval()
         else:
             draft_vision_modules = None
@@ -587,13 +598,13 @@ def main(
                         encoded, embedded = embed_tokens_multimodal(
                             prompt=prompt, tokenizer=tokenizer, config=model.config.mm_config,
                             device=device, images=question["images"], vision_modules=vision_modules,
-                            embed_tokens=model.tok_embeddings, dtype=torch.float16
+                            embed_tokens=model.tok_embeddings, dtype=precision
                         )
                         if is_speculative:
                             _, draft_embedded = embed_tokens_multimodal(
                                 prompt=prompt, tokenizer=tokenizer, config=draft_model.config.mm_config,
                                 device=device, images=question["images"], vision_modules=draft_vision_modules,
-                                embed_tokens=draft_model.tok_embeddings, dtype=torch.bfloat16
+                                embed_tokens=draft_model.tok_embeddings, dtype=precision
                             )
                         else:
                             draft_embedded = None
@@ -618,7 +629,7 @@ def main(
                 )
             end_time = time.time()
             
-            output_ids = output[0][len(encoded):]
+            output_ids = output[0][len(encoded[0]):]
             if conv.stop_token_ids:
                 stop_token_ids_index = [i for i, id in enumerate(output_ids) if id in conv.stop_token_ids]
                 if stop_token_ids_index:
@@ -634,7 +645,7 @@ def main(
             generated_text = generated_text.strip()
             
             walltime = end_time - start_time
-            tokens_generated = len(output[0]) - len(encoded)
+            tokens_generated = len(output[0]) - len(encoded[0])
             speed = tokens_generated / walltime
             
             turns.append(generated_text)
