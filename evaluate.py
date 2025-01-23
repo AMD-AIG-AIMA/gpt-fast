@@ -221,10 +221,13 @@ def speculative_decode(
     input_pos: int,
     speculate_k: int,
     do_block_verify: bool = False,
+    draf_input_pos: Optional[int] = None,
     **sampling_kwargs
 ) -> torch.Tensor:
     device = cur_token.device
-    orig_input_pos = torch.tensor([input_pos], dtype=torch.int64, device=device)
+    if draf_input_pos is None:
+        draf_input_pos = input_pos
+    orig_input_pos = torch.tensor([draf_input_pos], dtype=torch.int64, device=device)
     
     # Get draft tokens and probabilities
     with TimeProfiler("Speculate Decode", model_size=model_size(draft_model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
@@ -277,41 +280,53 @@ def generate(
     speculate_k: Optional[int] = 8,
     callback = lambda x: x,
     do_block_verify: bool = False,
-    multimodal: bool = False,
     embedded: Optional[torch.Tensor] = None,
+    draft_encoded: Optional[torch.Tensor] = None,
     draft_embedded: Optional[torch.Tensor] = None,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
     Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
     """
-    if multimodal:
-        assert embedded is not None, "Must provide embedded input for multimodal models"
     is_speculative = draft_model is not None
+    multimodal = True if embedded is not None else False
+    draft_multimodal = True if draft_embedded is not None else False
+    if draft_multimodal and draft_encoded is not None:
+        raise ValueError("Draft model is multimodal, but `draft_encoded` is also provided! \
+                          `draft_encoded` is only used for multimodal target and text-only draft models.")
     # create an empty tensor of the expected final shape and fill in the current tokens
-    T = prompt.size(-1)  # Text token length
-    T_embed = embedded.size(1) if multimodal else T  # Full embedding sequence length
-    T_new = T + max_new_tokens  # New text token length
+    input_text_length = prompt.size(-1)
+    input_embed_length = embedded.size(1) if embedded is not None else input_text_length
+    text_seq_length = input_text_length + max_new_tokens # Full text sequence length
+    embed_seq_length = input_embed_length + max_new_tokens if multimodal else text_seq_length # Full embedding sequence length
     if interactive:
-        max_seq_length = 350
+        embed_seq_length = 350
     else:
-        max_seq_length = min(T_embed + max_new_tokens, model.config.block_size)
+        embed_seq_length = min(embed_seq_length, model.config.block_size)
 
     device, dtype = prompt.device, prompt.dtype
-    max_seq_length = max_seq_length + speculate_k + 1 if is_speculative else max_seq_length
+    embed_seq_length = embed_seq_length + speculate_k + 1 if is_speculative else embed_seq_length
+    text_seq_length = text_seq_length + speculate_k + 1 if is_speculative else text_seq_length
+    draft_text_seq_length = draft_encoded.size(-1) + speculate_k + 1 + max_new_tokens if draft_encoded is not None else text_seq_length
+    if not multimodal:
+        assert text_seq_length == embed_seq_length, "Text-only model should have the same embed_seq_length as text_seq_length"
     with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
+        model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
         if is_speculative and draft_model is not model:
-            draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
+            if draft_embedded is not None:
+                # Draft is multimodal
+                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
+            else:
+                # Draft is text only
+                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_text_seq_length)
 
     # create an empty tensor of the expected final shape and fill in the current tokens
-    text_seq_len = T_new if not speculate_k else T_new + speculate_k + 1
-    empty = torch.empty(batch_size, text_seq_len, dtype=dtype, device=device)
+    seq = torch.empty(batch_size, text_seq_length, dtype=dtype, device=device)
     # We are just making the same prompt for every batch
     prompt = prompt.view(1, -1).repeat(batch_size, 1)
-    empty[:, :T] = prompt
-    seq = empty
-    input_pos = torch.arange(0, T_embed, device=device)
+    seq[:, :input_text_length] = prompt
+    input_pos = torch.arange(0, input_embed_length, device=device)
+    draft_input_pos = torch.arange(0, draft_encoded.size(-1), device=device) if draft_encoded is not None else input_pos
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
@@ -320,37 +335,43 @@ def generate(
         else:
             next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
         if is_speculative:
-            if draft_embedded is not None:
+            if draft_multimodal:
                 prefill(draft_model, draft_embedded, input_pos, embedded=True, **sampling_kwargs)
+            elif multimodal:
+                # Target multimodal, draft text only
+                prefill(draft_model, draft_encoded.view(batch_size, -1) , draft_input_pos, **sampling_kwargs)
             else:
                 prefill(draft_model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs)
-    seq[:, T] = next_token.squeeze()
+    seq[:, input_text_length] = next_token.squeeze()
 
-    input_pos = torch.tensor([T_embed], device=device, dtype=torch.int)
+    input_pos = torch.tensor([input_embed_length], device=device, dtype=torch.int)
+    
     accept_counts = [0] * (speculate_k + 1)
 
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
-        max_pos = max_seq_length - 1 - (speculate_k + 1)
+        draft_input_pos = draft_encoded.size(-1) if draft_encoded is not None else input_pos
+        max_pos = embed_seq_length - 1 - (speculate_k + 1)
         while input_pos < max_pos:
             cur_token = next_token.view(())
 
             next_tokens = speculative_decode(
-                model, draft_model, cur_token, input_pos, speculate_k, do_block_verify, **sampling_kwargs
+                model, draft_model, cur_token, input_pos, speculate_k, do_block_verify, draft_input_pos, **sampling_kwargs
             )
 
             accept_counts[len(next_tokens) - 1] += 1
-            num_added = min(max_seq_length - input_pos - 1, len(next_tokens))
+            num_added = min(embed_seq_length - input_pos - 1, len(next_tokens))
             if not multimodal:
                 seq[:,input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
             else:
-                text_input_pos = input_pos - T_embed + T + 1
+                text_input_pos = input_pos - (input_embed_length - input_text_length) + 1
                 seq[:, text_input_pos : text_input_pos + num_added] = next_tokens[: num_added]
             # for i in next_tokens[: num_added,]:
             #     callback(i)
             input_pos = input_pos + num_added
+            draft_input_pos = draft_input_pos + num_added
             next_token = next_tokens[-1]
-        text_input_pos = input_pos - T_embed + T + 1
+        text_input_pos = input_pos - (input_embed_length - input_text_length) + 1
         seq = seq[:, :text_input_pos]
     else:
         new_tokens, new_probs = [], []
@@ -368,8 +389,8 @@ def generate(
                     # callback(new_tokens[-1])
                     new_probs.append(next_prob.clone())
                     cur_token = next_token.clone()
-        end = len(new_tokens) + T +1
-        seq[:, T + 1:end] = torch.cat(new_tokens, dim=-1)
+        end = len(new_tokens) + input_text_length +1
+        seq[:, input_text_length + 1:end] = torch.cat(new_tokens, dim=-1)
 
     generate_stats = {
         'accept_counts': accept_counts
@@ -506,7 +527,7 @@ def main(
     if is_speculative:
         print(f"Loading draft model from {draft_checkpoint_path}")
         draft_model = _load_model(draft_checkpoint_path, device, precision, use_tp=False)
-        draft_multimodal = hasattr(draft_model.config, "mm_config")
+        draft_multimodal =  getattr(draft_model.config, "mm_config", None) is not None
         if draft_multimodal:
             draft_vision_checkpoints = str(draft_checkpoint_path.parent / "vision_modules.pth")
             draft_vision_modules = VisionModule(draft_model.config.mm_config, dtype=precision,checkpoint_path=draft_vision_checkpoints)
@@ -591,6 +612,7 @@ def main(
             if not multimodal:
                 encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
                 embedded = None
+                draft_encoded = None
                 draft_embedded = None
             else:
                 with TimeProfiler("Embedding"):
@@ -600,14 +622,20 @@ def main(
                             device=device, images=question["images"], vision_modules=vision_modules,
                             embed_tokens=model.tok_embeddings, dtype=precision
                         )
-                        if is_speculative:
-                            _, draft_embedded = embed_tokens_multimodal(
+                        if is_speculative and draft_multimodal:
+                            draft_encoded, draft_embedded = embed_tokens_multimodal(
                                 prompt=prompt, tokenizer=tokenizer, config=draft_model.config.mm_config,
                                 device=device, images=question["images"], vision_modules=draft_vision_modules,
                                 embed_tokens=draft_model.tok_embeddings, dtype=precision
                             )
-                        else:
+                        elif is_speculative and not draft_multimodal:
+                            # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
+                            draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
                             draft_embedded = None
+                        else:
+                            draft_encoded = None
+                            draft_embedded = None
+                        encoded = encoded.squeeze(0)
             
             start_time = time.time()
             with TimeProfiler("generate"):
@@ -623,13 +651,13 @@ def main(
                     speculate_k=speculate_k,
                     callback=lambda x: x,
                     do_block_verify=do_block_verify,
-                    multimodal=multimodal,
                     embedded=embedded,
+                    draft_encoded=draft_encoded,
                     draft_embedded=draft_embedded
                 )
             end_time = time.time()
             
-            output_ids = output[0][len(encoded[0]):]
+            output_ids = output[0][len(encoded):]
             if conv.stop_token_ids:
                 stop_token_ids_index = [i for i, id in enumerate(output_ids) if id in conv.stop_token_ids]
                 if stop_token_ids_index:
@@ -645,7 +673,7 @@ def main(
             generated_text = generated_text.strip()
             
             walltime = end_time - start_time
-            tokens_generated = len(output[0]) - len(encoded[0])
+            tokens_generated = len(output[0]) - len(encoded)
             speed = tokens_generated / walltime
             
             turns.append(generated_text)
