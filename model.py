@@ -34,7 +34,7 @@ class ModelArgs:
     rope_base: float = 10000
     norm_eps: float = 1e-5
     rope_scaling: Optional[dict] = None
-    wqkv_bias: Optional[bool] = False,
+    wqkv_bias: Optional[bool] = False
     mm_config: Optional[MultimodalModelArgs] = None
 
     def __post_init__(self):
@@ -100,6 +100,9 @@ transformer_configs = {
     ),
     "llava-onevision-qwen2-0.5b-si":dict(block_size=8192, n_layer=24, n_head=14, n_local_heads=2, dim=896, intermediate_size=4864, vocab_size=151936,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=64, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("llava-onevision-qwen2-0.5b-si")
+    ),
+    "llava-onevision-qwen2-72b-si":dict(block_size=131072, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=29568, vocab_size=152064,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("llava-onevision-qwen2-72b-si")
     ),
 }
 

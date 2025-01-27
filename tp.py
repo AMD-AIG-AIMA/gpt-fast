@@ -79,6 +79,20 @@ def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = [
         v = shard(v, dim)
         return torch.cat((q,k,v), dim=dim)
 
+    
+    # Handle bias if it exists
+    if linear.bias is not None:
+        if style == "colwise":
+            if weight_splits:
+                # For QKV attention with bias
+                sharded_bias = shard_qkv(linear.bias, 0, weight_splits)
+            else:
+                sharded_bias = shard(linear.bias, 0)
+            linear.bias = nn.Parameter(sharded_bias, requires_grad=False)
+        elif style == "rowwise":
+            # For rowwise sharding, bias is not split
+            pass
+        
     # shard
     if weight_splits:
         # attention
@@ -121,6 +135,18 @@ def _apply_tp_ffn(mlp: FeedForward) -> None:
     world_size = _get_world_size()
     mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
         output, "sum", list(range(world_size))))
+    # # Create a process group without name
+    # if not dist.is_initialized():
+    #     dist.init_process_group(backend="nccl")
+    
+    # # Store the process group as a module attribute to prevent recreation
+    # if not hasattr(mlp, 'process_group'):
+    #     ranks = list(range(world_size))
+    #     mlp.process_group = dist.new_group(ranks=ranks)
+    
+    # mlp.register_forward_hook(
+    #     lambda _module, _input, output: funcol.all_reduce(output, "sum", group=mlp.process_group)
+    # )
 
 
 def _apply_tp_attn(attn: Attention) -> None:
@@ -145,6 +171,18 @@ def _apply_tp_attn(attn: Attention) -> None:
 
     attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
         output[0], "sum", list(range(world_size))))
+    # # Create a process group without name
+    # if not dist.is_initialized():
+    #     dist.init_process_group(backend="nccl")
+    
+    # # Store the process group as a module attribute to prevent recreation
+    # if not hasattr(attn, 'process_group'):
+    #     ranks = list(range(world_size))
+    #     attn.process_group = dist.new_group(ranks=ranks)
+    
+    # attn.register_forward_hook(
+    #     lambda _module, _input, output: funcol.all_reduce(output[0], "sum", group=attn.process_group)
+    # )
 
 
 def _apply_tp_Transformer(Transformer: Transformer) -> None:

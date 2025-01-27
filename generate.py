@@ -222,8 +222,12 @@ def generate(
 
 def encode_tokens(tokenizer, string, bos=True, device=default_device):
     tokens = tokenizer.encode(string)
+    # if bos:
+    #     tokens = [tokenizer.bos_id()] + tokens
+    # return torch.tensor(tokens, dtype=torch.int, device=device)
     if bos:
-        tokens = [tokenizer.bos_id()] + tokens
+        if tokenizer.bos_id() is not None:
+            tokens = [tokenizer.bos_id()] + tokens
     return torch.tensor(tokens, dtype=torch.int, device=device)
 
 def _load_model(checkpoint_path, device, precision, use_tp):
@@ -300,7 +304,7 @@ def main(
     assert checkpoint_path.is_file(), checkpoint_path
 
     tokenizer_path = checkpoint_path.parent / "tokenizer.model"
-    assert tokenizer_path.is_file(), str(tokenizer_path)
+    # assert tokenizer_path.is_file(), str(tokenizer_path)
 
     global print
     from tp import maybe_init_dist

@@ -55,6 +55,27 @@ class MultimodalModelArgs:
 
 
 mm_transformer_config = {
+    "llava-onevision-qwen2-72b-si": dict(
+        mm_newline_position= "one_token",
+        image_aspect_ratio= "anyres_max_9",
+        image_crop_resolution= None,
+        image_grid_pinpoints= get_default_pinpoints(),
+        image_split_resolution= None,
+        image_token_index= 151646,
+        mm_hidden_size= 1152,
+        mm_patch_merge_type= "spatial_unpad",
+        mm_projector_type= "mlp2x_gelu",
+        mm_resampler_type= None,
+        mm_spatial_pool_mode= "bilinear",
+        mm_use_im_patch_token= False,
+        mm_use_im_start_end= False,
+        mm_vision_select_feature= "patch",
+        mm_vision_select_layer= -2,
+        mm_vision_tower= "google/siglip-so400m-patch14-384",
+        tokenizer_padding_side= "right",
+        use_mm_proj= True,
+        hidden_size=8192,
+    ),
     "llava-onevision-qwen2-7b-si": dict(
         mm_newline_position= "one_token",
         image_aspect_ratio= "anyres_max_9",

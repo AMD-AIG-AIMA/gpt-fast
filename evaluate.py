@@ -546,10 +546,10 @@ def main(
     if compile:
         if is_speculative:
             global model_forward, logits_to_probs
-            model_forward = torch.compile(model_forward, mode="max-autotune", fullgraph=True)
+            model_forward = torch.compile(model_forward, mode="reduce-overhead", fullgraph=True)
 
         global decode_one_token, prefill
-        decode_one_token = torch.compile(decode_one_token, mode="max-autotune", fullgraph=True)
+        decode_one_token = torch.compile(decode_one_token, mode="reduce-overhead", fullgraph=True)
 
         if compile_prefill:
             prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
@@ -623,11 +623,12 @@ def main(
                             embed_tokens=model.tok_embeddings, dtype=precision
                         )
                         if is_speculative and draft_multimodal:
-                            draft_encoded, draft_embedded = embed_tokens_multimodal(
+                            _, draft_embedded = embed_tokens_multimodal(
                                 prompt=prompt, tokenizer=tokenizer, config=draft_model.config.mm_config,
                                 device=device, images=question["images"], vision_modules=draft_vision_modules,
                                 embed_tokens=draft_model.tok_embeddings, dtype=precision
                             )
+                            draft_encoded = None
                         elif is_speculative and not draft_multimodal:
                             # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
                             draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)

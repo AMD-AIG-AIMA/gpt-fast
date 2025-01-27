@@ -163,7 +163,7 @@ class VisionModule(nn.Module):
             self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=dtype))
 
         if checkpoint_path is not None:
-            self.load_state_dict(torch.load(checkpoint_path))
+            self.load_state_dict(torch.load(checkpoint_path, weights_only=True))
 
         return
 
