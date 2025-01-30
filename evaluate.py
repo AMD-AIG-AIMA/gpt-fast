@@ -546,10 +546,10 @@ def main(
     if compile:
         if is_speculative:
             global model_forward, logits_to_probs
-            model_forward = torch.compile(model_forward, mode="reduce-overhead", fullgraph=True)
+            model_forward = torch.compile(model_forward, mode="max-autotune", fullgraph=True)
 
         global decode_one_token, prefill
-        decode_one_token = torch.compile(decode_one_token, mode="reduce-overhead", fullgraph=True)
+        decode_one_token = torch.compile(decode_one_token, mode="max-autotune", fullgraph=True)
 
         if compile_prefill:
             prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
@@ -718,7 +718,7 @@ def main(
             total_counts = sum(counts_aggregated)
             acceptance_probs = [count / total_counts for count in counts_aggregated]
             print(f"Acceptance probs: {acceptance_probs}")
-            print(f"Mean Accepted: {sum([(idx+1) * count for idx, count in enumerate(counts_aggregated[:-1])]) / sum(counts_aggregated[:-1]):.2f}")
+            print(f"Mean Accepted: {sum([(idx) * count for idx, count in enumerate(counts_aggregated)]) / sum(counts_aggregated):.2f}")
 
 if __name__ == '__main__':
     import argparse
