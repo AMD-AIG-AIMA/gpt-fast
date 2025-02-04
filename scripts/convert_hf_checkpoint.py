@@ -107,11 +107,15 @@ def convert_hf_checkpoint(
         merged_result['lm_head.weight'] = merged_result['model.embed_tokens.weight']
     if "llava" in model_name.lower():
         save_llava_vision_parts(merged_result, checkpoint_dir)
+    if "qwen2.5" in model_name.lower():
+        save_qwen2_5vl_vision_parts(merged_result, checkpoint_dir)
     for key, value in merged_result.items():
         if "llava" in model_name.lower() and key.startswith(
             ("model.vision_tower", "model.mm_projector", "model.image_newline")
         ):
             continue  # Skip these keys for final_result
+        if "qwen2.5" in model_name.lower() and key.startswith("visual"):
+            continue
         if "layers" in key:
             abstract_key = re.sub(r'(\d+)', '{}', key)
             layer_num = re.search(r'\d+', key).group(0)
@@ -199,6 +203,16 @@ def save_llava_vision_parts(merged_result, checkpoint_dir):
                 vision_modules[key[6:]] = value
                 break
  
+    file_path = checkpoint_dir / "vision_modules.pth"
+    torch.save(vision_modules, file_path)
+    print(f"Saved vision_modules checkpoint to {file_path}")
+    
+def save_qwen2_5vl_vision_parts(merged_result, checkpoint_dir):
+    vision_modules = {}
+    for key, value in merged_result.items():
+        if key.startswith("visual"):
+            # getting the visual. out of the key
+            vision_modules[key[7:]] = value
     file_path = checkpoint_dir / "vision_modules.pth"
     torch.save(vision_modules, file_path)
     print(f"Saved vision_modules checkpoint to {file_path}")

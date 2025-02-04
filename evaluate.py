@@ -100,6 +100,7 @@ def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = Non
     logits = logits / max(temperature, 1e-5)
 
     if top_k is not None:
+        print('I really should not be here')
         v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
         pivot = v.select(-1, -1).unsqueeze(-1)
         logits = torch.where(logits < pivot, -float("Inf"), logits)
@@ -197,7 +198,7 @@ def token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, 
     rejected_locations = (torch.rand_like(accept_draft_prob) > accept_draft_prob).nonzero()
 
     if rejected_locations.shape[0] == 0: # All draft tokens have been accepted
-        accept_length = speculate_k + 1
+        accept_length = speculate_k
         last_token = multinomial_sample_one_no_sync(target_probs[-1])
         return torch.cat([draft_tokens, last_token])
     else:
@@ -546,10 +547,10 @@ def main(
     if compile:
         if is_speculative:
             global model_forward, logits_to_probs
-            model_forward = torch.compile(model_forward, mode="max-autotune", fullgraph=True)
+            model_forward = torch.compile(model_forward, mode="reduce-overhead", fullgraph=True)
 
         global decode_one_token, prefill
-        decode_one_token = torch.compile(decode_one_token, mode="max-autotune", fullgraph=True)
+        decode_one_token = torch.compile(decode_one_token, mode="reduce-overhead", fullgraph=True)
 
         if compile_prefill:
             prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
@@ -561,7 +562,7 @@ def main(
     
     model_template = get_model_template(checkpoint_path.parent.name)
     
-    system_message = ("You are a helpful, respectful and honest assistant. Always answer as helpfully as possible. ")
+    system_message = ("You are a helpful assistant.")
     conv = get_conversation_template(model_template)
     
     # Warmup calls
@@ -595,7 +596,6 @@ def main(
     if num_questions is not None:
         questions = questions[:num_questions]
     for question in tqdm(questions):
-        torch.manual_seed(0)
         conv.messages = []
         conv.set_system_message(system_message)
         
@@ -608,7 +608,6 @@ def main(
             conv.append_message(conv.roles[0], qs)
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
-            
             if not multimodal:
                 encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
                 embedded = None
@@ -718,16 +717,16 @@ def main(
             total_counts = sum(counts_aggregated)
             acceptance_probs = [count / total_counts for count in counts_aggregated]
             print(f"Acceptance probs: {acceptance_probs}")
-            print(f"Mean Accepted: {sum([(idx) * count for idx, count in enumerate(counts_aggregated)]) / sum(counts_aggregated):.2f}")
+            print(f"Mean Accepted: {sum([(idx+1) * count for idx, count in enumerate(counts_aggregated)]) / sum(counts_aggregated):.2f}")
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Evaluate model on benchmark datasets.')
     parser.add_argument('--bench_name', type=str, required=True, help='Name of the benchmark (e.g., mt_bench, human_eval)')
     parser.add_argument('--checkpoint_path', type=Path, required=True, help='Path to the model checkpoint')
-    parser.add_argument('--max_new_tokens', type=int, default=1024, help='Maximum number of new tokens to generate')
+    parser.add_argument('--max_new_tokens', type=int, default=100, help='Maximum number of new tokens to generate')
     parser.add_argument('--temperature', type=float, default=0.8, help='Temperature for sampling')
-    parser.add_argument('--top_k', type=int, default=200, help='Top-k for sampling')
+    parser.add_argument('--top_k', type=int, default=None, help='Top-k for sampling')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation')
     parser.add_argument('--draft_checkpoint_path', type=Path, default=None, help='Path to the draft model checkpoint for speculative decoding')
     parser.add_argument('--speculate_k', type=int, default=5, help='Speculative execution depth')
@@ -736,8 +735,11 @@ if __name__ == '__main__':
     parser.add_argument('--num_questions', type=int, default=None, help='Number of questions to evaluate')
     parser.add_argument('--warmup', type=int, default=5, help='Number of warmup steps')
     parser.add_argument('--do_block_verify', action='store_true', help='Whether to verify with block acceptance probability')
-    
+    parser.add_argument("--random_seed", default=None, type=int, help="Random seed")
+
     args = parser.parse_args()
+    if args.random_seed:
+            torch.manual_seed(args.random_seed)
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
          args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
          args.warmup, args.do_block_verify)
