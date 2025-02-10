@@ -228,7 +228,7 @@ class Attention(nn.Module):
         q = q.view(bsz, seqlen, self.n_head, self.head_dim)
         k = k.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         v = v.view(bsz, seqlen, self.n_local_heads, self.head_dim)
-
+        
         q = apply_rotary_emb(q, freqs_cis)
         k = apply_rotary_emb(k, freqs_cis)
 
@@ -302,6 +302,7 @@ def precompute_freqs_cis(
     freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem))
     if rope_scaling is not None:
         freqs = apply_rope_scaling(freqs, rope_scaling)
+    #TODO add capability of getting external t. check dimension of freqs vs self.inv_freqs in  Qwen2_5vlRotaryEmbedding, and check sanity
     t = torch.arange(seq_len, device=freqs.device)
     freqs = torch.outer(t, freqs)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
@@ -324,6 +325,24 @@ def apply_rotary_emb(x: Tensor, freqs_cis: Tensor) -> Tensor:
     return x_out2.type_as(x)
 
 
-def apply_rotary_emb_qwen2_5vl(x: Tensor, freqs_cis: Tensor) -> Tensor:
-    pass
-# TODO
+def precompute_freqs_cis_for_qwen2_5(seq_len, n_elem, base, dtype, rope_scaling, position_ids, mrope_section):
+    freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem))
+    if rope_scaling is not None:
+        freqs = apply_rope_scaling(freqs, rope_scaling)
+    t = torch.arange(position_ids[0,0,-1]+1, position_ids[0,0,-1] + 1 + seq_len - position_ids.shape[-1])
+    t = t.expand(3,position_ids.shape[1],-1)
+    position_ids = torch.cat([position_ids, t], dim=-1)
+    freqs_expanded = freqs[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
+    position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
+    freqs = torch.matmul(freqs_expanded.float(), position_ids_expanded.float()).transpose(2, 3)
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+    cache = torch.stack([flatten_freqs(freqs_cis.real, mrope_section), flatten_freqs(freqs_cis.imag, mrope_section)], dim=-1)
+    return cache.to(dtype=dtype)
+    
+
+    
+def flatten_freqs(freq, mrope_section):
+    # mrope_section = mrope_section * 2
+    return torch.cat([m[i % 3] for i, m in enumerate(freq.split(mrope_section, dim=-1))], dim=-1).squeeze()
+
+    
