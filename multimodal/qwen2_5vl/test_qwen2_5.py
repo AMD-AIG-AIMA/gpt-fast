@@ -76,17 +76,18 @@ for param in hf_model.parameters():
     param.requires_grad = False  
 # summary(hf_llm)
 # summary(gf_model)]
+max_new_tokens = 16
+
 input_pos = torch.arange(0, inputs_embeds.shape[1], device=device)
 try:
-    hf_output = hf_model.generate(**inputs, max_new_tokens=16, return_dict_in_generate=True, output_logits =True)
+    hf_output = hf_model.generate(**inputs, max_new_tokens=max_new_tokens, return_dict_in_generate=True, output_logits =True)
 except:
     pass
 # print(hf_output)
 
 gf_qwen_tokens = torch.tensor([])
 gf_qwen_logits = torch.tensor([])
-
-for i in range(16):
+for i in range(max_new_tokens):
     gf_qwen_output = gf_qwen_model(inputs_embeds, input_pos, embedded=True)
     gf_qwen_logit = gf_qwen_output[:,-1,:].unsqueeze(1)
     gf_qwen_token = gf_qwen_logit.argmax(dim=-1)
@@ -98,14 +99,13 @@ for i in range(16):
     gf_qwen_logits = torch.cat([gf_qwen_logits, gf_qwen_logit], dim=1)
 
 hf_logits = torch.stack(hf_output.logits, dim=1)
-hf_tokens = hf_output.sequences[0,-16:]
+hf_tokens = hf_output.sequences[0,-max_new_tokens:]
 # generated_ids_trimmed = [
 #     out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
 # ]
 # output_text = processor.batch_decode(
 #     generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
 # )
-print(hf_logits.shape, gf_qwen_logits.shape)
 mse_error = F.mse_loss(gf_qwen_logits,hf_logits)
 
 
