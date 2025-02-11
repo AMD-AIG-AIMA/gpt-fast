@@ -652,7 +652,7 @@ def main(
                     with torch.inference_mode():
                         print
                         if 'Qwen' in str(checkpoint_path):
-                           inputs, embedded = embed_token_multimodal_qwen2_5vl(prompt=prompt, processor_id=str(Path(*checkpoint_path.parent.parts[1:])),
+                           inputs, embedded = embed_token_multimodal_qwen2_5vl(prompt=prompt, processor_id=str(Path(*checkpoint_path.parent.parts[-2:])),
                                                             device=device, images=question['images'], vision_modules=vision_modules,
                                                             embed_tokens=model.tok_embeddings, dtype=precision)
                            encoded = inputs['input_ids']
@@ -665,7 +665,7 @@ def main(
                             )
                         if is_speculative and draft_multimodal:
                             if 'Qwen' in str(draft_checkpoint_path):
-                                _, draft_embedded = embed_token_multimodal_qwen2_5vl(prompt=prompt, processor_id=str(Path(*draft_checkpoint_path.parent.parts[1:])),
+                                _, draft_embedded = embed_token_multimodal_qwen2_5vl(prompt=prompt, processor_id=str(Path(*draft_checkpoint_path.parent.parts[-2:])),
                                                                 device=device, images=question['images'], vision_modules=draft_vision_modules,
                                                                 embed_tokens=draft_model.tok_embeddings, dtype=precision)
                             elif 'llava' in str(draft_checkpoint_path):

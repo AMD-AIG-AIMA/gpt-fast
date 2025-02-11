@@ -1,4 +1,3 @@
-from qwen_vl_utils import process_vision_info
 from transformers import AutoProcessor
 import torch
 import re
@@ -35,6 +34,7 @@ def process_chat_template(processor, message):
     )
 
 def process_visual_inputs(processor, text, device, dtype):
+    from qwen_vl_utils import process_vision_info
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(
         text=[text],

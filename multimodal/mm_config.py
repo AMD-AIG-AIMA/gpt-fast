@@ -140,6 +140,48 @@ mm_transformer_config = {
     tokens_per_second= 2,
     temporal_patch_size= 2
     ),
+    "Qwen2.5-VL-7B-Instruct": dict(
+    depth= 32,
+    hidden_act= "silu",
+    hidden_size= 1280,
+    intermediate_size= 3420,
+    num_heads= 16,
+    in_chans= 3,
+    out_hidden_size= 3584,
+    patch_size= 14,
+    spatial_merge_size= 2,
+    spatial_patch_size= 14,
+    window_size= 112,
+    fullatt_block_indexes= [
+      7,
+      15,
+      23,
+      31
+    ],
+    tokens_per_second= 2,
+    temporal_patch_size= 2
+    ),
+    "Qwen2.5-VL-72B-Instruct": dict(
+    depth= 32,
+    hidden_act= "silu",
+    hidden_size= 1280,
+    intermediate_size= 3456,
+    num_heads= 16,
+    in_chans= 3,
+    out_hidden_size= 8192,
+    patch_size= 14,
+    spatial_merge_size= 2,
+    spatial_patch_size= 14,
+    window_size= 112,
+    fullatt_block_indexes= [
+      7,
+      15,
+      23,
+      31
+    ],
+    tokens_per_second= 2,
+    temporal_patch_size= 2
+    ),
 }
 
 @dataclass
