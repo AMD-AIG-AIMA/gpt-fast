@@ -1,9 +1,10 @@
 from qwen_vl_utils import process_vision_info
 from transformers import AutoProcessor
 import torch
+import re
 def qwen2_5vl_process_vision_info():
     pass
-
+IMAGE_TOKEN_PATTERN = '<|vision_start|><|image_pad|><|vision_end|>'
 messages = [
     {
         "role": "user",
@@ -83,21 +84,20 @@ def set_model_inputs(
     )
     return model_inputs
 
-def prepare_input_embeds(model_inputs, model, vision_model, image_token_id , device, dtype):
-    inputs_embeds = model.tok_embeddings(model_inputs['input_ids'])
+def prepare_input_embeds(input_ids, pixel_values, image_grid_thw, embed_tokens, vision_model, image_token_id , device, dtype):
+    inputs_embeds = embed_tokens(input_ids)
     inputs_embeds = inputs_embeds.to(device=device, dtype=dtype)
-    pixel_values = model_inputs['pixel_values']
     if pixel_values is not None:
         pixel_values = pixel_values.to(device=device, dtype=dtype)
-        image_embeds = vision_model(pixel_values, grid_thw=model_inputs['image_grid_thw'])
-        n_image_tokens = (model_inputs['input_ids'] == image_token_id).sum().item()
+        image_embeds = vision_model(pixel_values, grid_thw=image_grid_thw)
+        n_image_tokens = (input_ids == image_token_id).sum().item()
         n_image_features = image_embeds.shape[0]
         if n_image_tokens != n_image_features:
             raise ValueError(
                 f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
             )
 
-        mask = model_inputs['input_ids'] == image_token_id
+        mask = input_ids == image_token_id
         mask_unsqueezed = mask.unsqueeze(-1)
         mask_expanded = mask_unsqueezed.expand_as(inputs_embeds)
         image_mask = mask_expanded.to(device=device)
@@ -107,6 +107,8 @@ def prepare_input_embeds(model_inputs, model, vision_model, image_token_id , dev
     return inputs_embeds.detach()
 
 def get_rope_index(input_ids, image_grid_thw, mm_config, attention_mask=None):
+        if input_ids.ndim < 2:
+            input_ids = input_ids.unsqueeze(0)
         spatial_merge_size = mm_config.spatial_merge_size
         image_token_id = 151655
         vision_start_token_id = 151652
@@ -196,11 +198,6 @@ def get_rope_index(input_ids, image_grid_thw, mm_config, attention_mask=None):
                     .view(1, 1, -1)
                     .expand(3, input_ids.shape[0], -1)
                 )
-                mrope_position_deltas = torch.zeros(
-                    [input_ids.shape[0], 1],
-                    device=input_ids.device,
-                    dtype=input_ids.dtype,
-                )
 
             return position_ids, mrope_position_deltas
         
@@ -212,8 +209,31 @@ def get_position_ids(model_inputs, mm_config):
         model_inputs['attention_mask'],
     )
     return position_ids, rope_deltas
-#TODO: check if extra computations of position_ids is required
     
     
     
-    
+def embed_token_multimodal_qwen2_5vl(
+    prompt,
+    processor_id,
+    device,
+    images,
+    vision_modules,
+    embed_tokens,
+    dtype,
+):  
+    # print('before prompt', prompt)
+    image_pattern = re.compile(r'<image(?:\s+\d+)?>')
+    prompt = re.sub(image_pattern, IMAGE_TOKEN_PATTERN, prompt)
+    # print('after prompt', prompt)
+    processor = get_processor(processor_id)
+    inputs = processor(
+        text=[prompt],
+        images=images,
+        padding=True,
+        return_tensors="pt",
+    )
+    inputs = inputs.to(device=device, dtype=dtype)
+    inputs_embeds = prepare_input_embeds(inputs['input_ids'], inputs['pixel_values'], inputs['image_grid_thw'], embed_tokens, vision_modules,151655,device,dtype)
+    # print(inputs['input_ids'].shape, inputs_embeds.shape)
+
+    return inputs, inputs_embeds

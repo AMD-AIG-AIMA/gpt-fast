@@ -14,9 +14,9 @@ from multimodal.mm_config import QwenVisionModelArgs
 from evaluate import _load_model
 from pathlib import Path
 import torch.nn.functional as F
-# torch.manual_seed(1234)
+torch.manual_seed(1234)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-dtype = torch.float
+dtype = torch.bfloat16
 torch.set_default_device(device)
 
 message = get_qwen2_5vl_message_template()
@@ -50,8 +50,8 @@ gf_qwen_model = _load_model(qwen_checkpoint_path, device, dtype, use_tp=False)
 
 for param in gf_vision_model.parameters():  
     param.requires_grad = False 
-    
-inputs_embeds = prepare_input_embeds(model_inputs, gf_qwen_model, gf_vision_model, 151655,device, dtype)
+print(model_inputs['input_ids'].shape)
+inputs_embeds = prepare_input_embeds(model_inputs['input_ids'],model_inputs['pixel_values'], model_inputs['image_grid_thw'],gf_qwen_model.tok_embeddings, gf_vision_model, 151655,device, dtype)
 mm_config = QwenVisionModelArgs.from_name('Qwen2.5-VL-3B-Instruct')
 
 position_ids, _ = get_position_ids(model_inputs,mm_config)
@@ -59,12 +59,12 @@ position_ids, _ = get_position_ids(model_inputs,mm_config)
 # print(position_ids, position_ids.shape)
 
 # blegh
-gf_qwen_model.setup_caches(max_batch_size=1, max_seq_length=inputs_embeds.shape[1]*2)
+gf_qwen_model.setup_caches(max_batch_size=1, max_seq_length=inputs_embeds.shape[1]*2, mrope=True, position_ids=position_ids)
 
-prefill_freqs_cis = precompute_freqs_cis_for_qwen2_5(gf_qwen_model.config.block_size, gf_qwen_model.config.dim // gf_qwen_model.config.n_head, gf_qwen_model.config.rope_base, dtype, gf_qwen_model.config.rope_scaling, position_ids, [16, 24, 24])
+# prefill_freqs_cis = precompute_freqs_cis_for_qwen2_5(gf_qwen_model.config.block_size, gf_qwen_model.config.dim // gf_qwen_model.config.n_head, gf_qwen_model.config.rope_base, dtype, gf_qwen_model.config.rope_scaling, position_ids, [16, 24, 24])
 # print(prefill_freqs_cis[...,0].shape)
 
-gf_qwen_model.freqs_cis = prefill_freqs_cis
+# gf_qwen_model.freqs_cis = prefill_freqs_cis
 #TODO: write a set_freqs_cis function? No, add position_ids to setup_cache
 
 
@@ -76,11 +76,21 @@ for param in hf_model.parameters():
     param.requires_grad = False  
 # summary(hf_llm)
 # summary(gf_model)]
-max_new_tokens = 16
+max_new_tokens = 100
 
 input_pos = torch.arange(0, inputs_embeds.shape[1], device=device)
 try:
-    hf_output = hf_model.generate(**inputs, max_new_tokens=max_new_tokens, return_dict_in_generate=True, output_logits =True)
+    hf_output = hf_model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        return_dict_in_generate=True,
+        output_logits =True,
+        do_sample=False,
+        temperature = 1,
+        top_p = 1,
+        top_k = None,
+        repetition_penalty=1,
+        )
 except:
     pass
 # print(hf_output)
@@ -108,8 +118,24 @@ hf_tokens = hf_output.sequences[0,-max_new_tokens:]
 # )
 mse_error = F.mse_loss(gf_qwen_logits,hf_logits)
 
-
+# torch.set_printoptions(edgeitems=32)
 print('hf_logits: {}, gf_qwen_logits: {}, MSE Error: {}'.format(hf_logits, gf_qwen_logits, mse_error))
 
 
-print('Is new_token the same?', (hf_tokens - gf_qwen_tokens).nonzero().numel()==0)
+print('Is generated tokens the same?', (hf_tokens - gf_qwen_tokens).nonzero().numel()==0)
+
+# print(hf_tokens - gf_qwen_tokens)
+
+# print(hf_logits[0,27:].max(dim=-1), gf_qwen_logits[0,27:].max(dim=-1))
+
+
+hf_output_text = ''.join(processor.batch_decode(
+    hf_tokens.to(int), skip_special_tokens=False, clean_up_tokenization_spaces=False
+))
+
+gf_output_text = ''.join(processor.batch_decode(
+    gf_qwen_tokens.to(int), skip_special_tokens=False, clean_up_tokenization_spaces=False
+))
+
+print('hf genereated text: ' + hf_output_text)
+print('gpt-fast genereated text: ' + gf_output_text)

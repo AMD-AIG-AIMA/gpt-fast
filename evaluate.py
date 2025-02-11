@@ -17,7 +17,9 @@ from model import Transformer
 from tokenizer import get_tokenizer
 from multimodal.llava.builder import VisionModule
 from multimodal.llava.preprocessing import embed_tokens_multimodal
-
+from multimodal.qwen2_5vl.preprocessing import get_rope_index, embed_token_multimodal_qwen2_5vl
+from multimodal.qwen2_5vl.builder import get_qwen_vision_model
+from multimodal.mm_config import QwenVisionModelArgs
 from time_profiler import TimeProfiler
 TimeProfiler.set_warm_up(0)
 
@@ -281,14 +283,18 @@ def generate(
     speculate_k: Optional[int] = 8,
     callback = lambda x: x,
     do_block_verify: bool = False,
+    mrope: Optional[bool] = None,
+    draft_mrope: Optional[bool] = None,
     embedded: Optional[torch.Tensor] = None,
     draft_encoded: Optional[torch.Tensor] = None,
     draft_embedded: Optional[torch.Tensor] = None,
+    image_grid_thw: Optional[torch.Tensor] = None,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
     Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
     """
+    # print('before: ', prompt)
     is_speculative = draft_model is not None
     multimodal = True if embedded is not None else False
     draft_multimodal = True if draft_embedded is not None else False
@@ -309,14 +315,22 @@ def generate(
     embed_seq_length = embed_seq_length + speculate_k + 1 if is_speculative else embed_seq_length
     text_seq_length = text_seq_length + speculate_k + 1 if is_speculative else text_seq_length
     draft_text_seq_length = draft_encoded.size(-1) + speculate_k + 1 + max_new_tokens if draft_encoded is not None else text_seq_length
+    if multimodal and (mrope or draft_mrope):
+        position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=image_grid_thw, mm_config=model.config.mm_config)
     if not multimodal:
         assert text_seq_length == embed_seq_length, "Text-only model should have the same embed_seq_length as text_seq_length"
     with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
+        if mrope:
+            model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length, mrope=True, position_ids=position_ids)
+        else:
+            model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
         if is_speculative and draft_model is not model:
             if draft_embedded is not None:
                 # Draft is multimodal
-                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
+                if draft_mrope:
+                    draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length, mrope=True, position_ids=position_ids)
+                else:
+                    draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
             else:
                 # Draft is text only
                 draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_text_seq_length)
@@ -396,6 +410,8 @@ def generate(
     generate_stats = {
         'accept_counts': accept_counts
     }
+    
+    # print('after: ', seq)
     return seq, generate_stats
 
 def encode_tokens(tokenizer, string, bos=True, device=default_device):
@@ -519,7 +535,16 @@ def main(
         torch.set_default_dtype(precision)
         torch.set_default_device(device)
         vision_checkpoints = str(checkpoint_path.parent / "vision_modules.pth")
-        vision_modules = VisionModule(model.config.mm_config, dtype=precision, checkpoint_path=vision_checkpoints)
+        # print(vision_checkpoints)
+        if 'Qwen' in vision_checkpoints:
+            vision_modules = get_qwen_vision_model(
+                checkpoint_path.parent.name,
+                vision_checkpoints,
+                device=device,
+                dtype=precision               
+            )
+        elif 'llava' in vision_checkpoints:
+            vision_modules = VisionModule(model.config.mm_config, dtype=precision, checkpoint_path=vision_checkpoints)
         vision_modules.requires_grad_(False) 
         vision_modules.eval()
     else:
@@ -531,7 +556,15 @@ def main(
         draft_multimodal =  getattr(draft_model.config, "mm_config", None) is not None
         if draft_multimodal:
             draft_vision_checkpoints = str(draft_checkpoint_path.parent / "vision_modules.pth")
-            draft_vision_modules = VisionModule(draft_model.config.mm_config, dtype=precision,checkpoint_path=draft_vision_checkpoints)
+            if 'Qwen' in vision_checkpoints:
+                draft_vision_modules = get_qwen_vision_model(
+                draft_checkpoint_path.parent.name,
+                draft_vision_checkpoints,
+                device=device,
+                dtype=precision               
+                )
+            elif 'llava' in vision_checkpoints:
+                draft_vision_modules = VisionModule(draft_model.config.mm_config, dtype=precision, checkpoint_path=draft_vision_checkpoints)
             draft_vision_modules.requires_grad_(False) 
             draft_vision_modules.eval()
         else:
@@ -543,7 +576,7 @@ def main(
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
 
     tokenizer = get_tokenizer(checkpoint_path.parent / "tokenizer.model", checkpoint_path)
-
+    
     if compile:
         if is_speculative:
             global model_forward, logits_to_probs
@@ -608,6 +641,7 @@ def main(
             conv.append_message(conv.roles[0], qs)
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
+            image_grid_thw = None
             if not multimodal:
                 encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
                 embedded = None
@@ -616,17 +650,30 @@ def main(
             else:
                 with TimeProfiler("Embedding"):
                     with torch.inference_mode():
-                        encoded, embedded = embed_tokens_multimodal(
-                            prompt=prompt, tokenizer=tokenizer, config=model.config.mm_config,
-                            device=device, images=question["images"], vision_modules=vision_modules,
-                            embed_tokens=model.tok_embeddings, dtype=precision
-                        )
-                        if is_speculative and draft_multimodal:
-                            _, draft_embedded = embed_tokens_multimodal(
-                                prompt=prompt, tokenizer=tokenizer, config=draft_model.config.mm_config,
-                                device=device, images=question["images"], vision_modules=draft_vision_modules,
-                                embed_tokens=draft_model.tok_embeddings, dtype=precision
+                        print
+                        if 'Qwen' in str(checkpoint_path):
+                           inputs, embedded = embed_token_multimodal_qwen2_5vl(prompt=prompt, processor_id=str(Path(*checkpoint_path.parent.parts[1:])),
+                                                            device=device, images=question['images'], vision_modules=vision_modules,
+                                                            embed_tokens=model.tok_embeddings, dtype=precision)
+                           encoded = inputs['input_ids']
+                           image_grid_thw = inputs['image_grid_thw']
+                        elif 'llava' in str(checkpoint_path):
+                            encoded, embedded = embed_tokens_multimodal(
+                                prompt=prompt, tokenizer=tokenizer, config=model.config.mm_config,
+                                device=device, images=question["images"], vision_modules=vision_modules,
+                                embed_tokens=model.tok_embeddings, dtype=precision
                             )
+                        if is_speculative and draft_multimodal:
+                            if 'Qwen' in str(draft_checkpoint_path):
+                                _, draft_embedded = embed_token_multimodal_qwen2_5vl(prompt=prompt, processor_id=str(Path(*draft_checkpoint_path.parent.parts[1:])),
+                                                                device=device, images=question['images'], vision_modules=draft_vision_modules,
+                                                                embed_tokens=draft_model.tok_embeddings, dtype=precision)
+                            elif 'llava' in str(draft_checkpoint_path):
+                                _, draft_embedded = embed_tokens_multimodal(
+                                    prompt=prompt, tokenizer=tokenizer, config=draft_model.config.mm_config,
+                                    device=device, images=question["images"], vision_modules=draft_vision_modules,
+                                    embed_tokens=draft_model.tok_embeddings, dtype=precision
+                                )
                             draft_encoded = None
                         elif is_speculative and not draft_multimodal:
                             # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
@@ -636,7 +683,6 @@ def main(
                             draft_encoded = None
                             draft_embedded = None
                         encoded = encoded.squeeze(0)
-            
             start_time = time.time()
             with TimeProfiler("generate"):
                 output, metrics = generate(
@@ -653,7 +699,10 @@ def main(
                     do_block_verify=do_block_verify,
                     embedded=embedded,
                     draft_encoded=draft_encoded,
-                    draft_embedded=draft_embedded
+                    draft_embedded=draft_embedded,
+                    mrope=True if 'Qwen' in str(checkpoint_path) else False,
+                    draft_mrope=True if 'Qwen' in str(draft_checkpoint_path) else False,
+                    image_grid_thw=image_grid_thw,
                 )
             end_time = time.time()
             
