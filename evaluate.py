@@ -521,7 +521,7 @@ def main(
                                                 config=model.config.mm_config, 
                                                 checkpoint_path=vision_checkpoints,
                                                 dtype=precision)
-        vision_modules.eval()
+        vision_modules.eval_mode()
     else:
         vision_modules = None
 
@@ -535,7 +535,7 @@ def main(
                                                         config=draft_model.config.mm_config, 
                                                         checkpoint_path=draft_vision_checkpoints,
                                                         dtype=precision)
-            draft_vision_modules.eval()
+            draft_vision_modules.eval_mode()
         else:
             draft_vision_modules = None
     else:

@@ -68,7 +68,7 @@ class VisionModule(ABC, nn.Module):
         state_dict = torch.load(checkpoint_path, map_location=self._device, weights_only=True)
         self.load_state_dict(state_dict)
 
-    def eval(self):
+    def eval_mode(self):
         self.requires_grad_(False) 
         self.eval()
         
@@ -116,7 +116,7 @@ class LlavaVisionModule(VisionModule):
         device: Optional[Union[str, torch.device]] = None
     ):
         super().__init__(config, dtype, device)
-        from llava.builder import build_vision_tower, build_vision_resampler, build_vision_projector
+        from multimodal.llava.builder import build_vision_tower, build_vision_resampler, build_vision_projector
         self.delay_load = getattr(config, "delay_load", False)
         self.vision_tower = build_vision_tower(config, delay_load=self.delay_load)
         self.vision_resampler = build_vision_resampler(config, vision_tower=self.vision_tower)
