@@ -785,7 +785,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_questions', type=int, default=None, help='Number of questions to evaluate')
     parser.add_argument('--warmup', type=int, default=5, help='Number of warmup steps')
     parser.add_argument('--do_block_verify', action='store_true', help='Whether to verify with block acceptance probability')
-    parser.add_argument("--random_seed", default=None, type=int, help="Random seed")
+    parser.add_argument("--random_seed", default=1234, type=int, help="Random seed")
 
     args = parser.parse_args()
     if args.random_seed:
