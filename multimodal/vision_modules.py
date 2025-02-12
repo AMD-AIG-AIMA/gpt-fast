@@ -6,7 +6,7 @@ from PIL import Image
 from dataclasses import dataclass
 from pathlib import Path
 
-from llava.preprocessing import process_images, tokenizer_image_token, prepare_inputs_labels_for_multimodal, IMAGE_TOKEN_INDEX
+from multimodal.llava.preprocessing import process_images, tokenizer_image_token, prepare_inputs_labels_for_multimodal, IMAGE_TOKEN_INDEX
 
 @dataclass 
 class VisionModelOutput:
@@ -127,7 +127,7 @@ class LlavaVisionModule(VisionModule):
         if checkpoint_path is not None:
             self.load_checkpoint(Path(checkpoint_path))
 
-    def process_images(self, images):
+    def preprocess_images(self, images):
         pass
 
     def forward(self,
