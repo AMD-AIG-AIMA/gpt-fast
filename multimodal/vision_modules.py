@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from multimodal.llava.preprocessing import process_images, tokenizer_image_token, prepare_inputs_labels_for_multimodal, IMAGE_TOKEN_INDEX
-from multimodal.qwen2_5vl.preprocessing import prepare_input_embeds, process_prompt_for_qwen2_5vl, get_processor
 
 @dataclass 
 class VisionModelOutput:
@@ -156,42 +155,3 @@ class LlavaVisionModule(VisionModule):
                                     image_newline=self.image_newline, 
                                     image_sizes=[img.size for img in images])
         return input_ids, embeds[4].to(dtype=self.dtype)
-    
-@VisionModule.register("Qwen2.5")
-class Qwen2_5VisionModule(VisionModule):
-    def __init__(
-        self,
-        config,
-        checkpoint_path: Optional[Path] = None,
-        dtype: torch.dtype = torch.float16,
-        device: Optional[Union[str, torch.device]] = None
-    ):
-        super().__init__(config, dtype, device)
-        from multimodal.qwen2_5vl.builder import get_qwen_vision_model
-        name = Path(checkpoint_path).parent.name
-        self._processor_id = Path(*Path(checkpoint_path).parent.parts[-2:])
-        self.vision_model = get_qwen_vision_model(name, checkpoint_path, self._device, self.dtype)
-        if checkpoint_path is not None:
-             self.vision_model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
-        self.vision_model = self.vision_model.to(device=self._device, dtype=self.dtype)
-
-    def preprocess_images(self, images):
-        pass
-
-    def forward(self,
-        prompt,
-        tokenizer,
-        images,
-        embed_tokens,
-        ):
-        prompt = process_prompt_for_qwen2_5vl(prompt)
-        processor = get_processor(self._processor_id)
-        inputs = processor(
-            text=[prompt],
-            images=images,
-            padding=True,
-            return_tensors="pt",
-        )
-        inputs = inputs.to(device=self._device, dtype=self.dtype)
-        inputs_embeds = prepare_input_embeds(inputs['input_ids'], inputs['pixel_values'], inputs['image_grid_thw'], embed_tokens, self.vision_model,151655,self._device,self.dtype)
-        return inputs, inputs_embeds
