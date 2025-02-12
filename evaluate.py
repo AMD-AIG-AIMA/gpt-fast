@@ -557,9 +557,9 @@ def main(
         if draft_multimodal:
             draft_vision_checkpoints = str(draft_checkpoint_path.parent / "vision_modules.pth")
             draft_vision_modules = VisionModule.from_name(draft_checkpoint_path.parent.name, 
-                                            config=draft_model.config.mm_config, 
-                                            checkpoint_path=draft_vision_checkpoints,
-                                            dtype=precision)
+                                                    config=draft_model.config.mm_config, 
+                                                    checkpoint_path=draft_vision_checkpoints,
+                                                    dtype=precision)
             draft_vision_modules.eval_mode()
         else:
             draft_vision_modules = None
