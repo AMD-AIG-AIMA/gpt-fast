@@ -211,8 +211,11 @@ def get_position_ids(model_inputs, mm_config):
     return position_ids, rope_deltas
     
     
-    
-def embed_token_multimodal_qwen2_5vl(
+def process_prompt_for_qwen2_5vl(prompt):
+    image_pattern = re.compile(r'<image(?:\s+\d+)?>')
+    prompt = re.sub(image_pattern, IMAGE_TOKEN_PATTERN, prompt)
+    return prompt
+def embed_token_multimodal(
     prompt,
     processor_id,
     device,
@@ -222,8 +225,7 @@ def embed_token_multimodal_qwen2_5vl(
     dtype,
 ):  
     # print('before prompt', prompt)
-    image_pattern = re.compile(r'<image(?:\s+\d+)?>')
-    prompt = re.sub(image_pattern, IMAGE_TOKEN_PATTERN, prompt)
+
     # print('after prompt', prompt)
     processor = get_processor(processor_id)
     inputs = processor(
