@@ -658,7 +658,7 @@ def main(
                             _, draft_embedded = draft_vision_modules(
                                 prompt=prompt, tokenizer=tokenizer, images=question["images"],
                                 embed_tokens=draft_model.tok_embeddings, 
-                            )                                
+                            )
                             draft_encoded = None
                         elif is_speculative and not draft_multimodal:
                             # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
