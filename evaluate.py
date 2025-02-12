@@ -536,7 +536,7 @@ def main(
         torch.set_default_device(device)
         vision_checkpoints = str(checkpoint_path.parent / "vision_modules.pth")
         # print(vision_checkpoints)
-        if 'Qwen' in vision_checkpoints:
+        if 'Qwen2.5' in vision_checkpoints:
             vision_modules = get_qwen_vision_model(
                 checkpoint_path.parent.name,
                 vision_checkpoints,
@@ -556,14 +556,14 @@ def main(
         draft_multimodal =  getattr(draft_model.config, "mm_config", None) is not None
         if draft_multimodal:
             draft_vision_checkpoints = str(draft_checkpoint_path.parent / "vision_modules.pth")
-            if 'Qwen' in vision_checkpoints:
+            if 'Qwen2.5' in draft_vision_checkpoints:
                 draft_vision_modules = get_qwen_vision_model(
                 draft_checkpoint_path.parent.name,
                 draft_vision_checkpoints,
                 device=device,
                 dtype=precision               
                 )
-            elif 'llava' in vision_checkpoints:
+            elif 'llava' in draft_vision_checkpoints:
                 draft_vision_modules = VisionModule(draft_model.config.mm_config, dtype=precision, checkpoint_path=draft_vision_checkpoints)
             draft_vision_modules.requires_grad_(False) 
             draft_vision_modules.eval()
@@ -652,11 +652,12 @@ def main(
                     with torch.inference_mode():
                         print
                         if 'Qwen' in str(checkpoint_path):
-                           inputs, embedded = embed_token_multimodal_qwen2_5vl(prompt=prompt, processor_id=str(Path(*checkpoint_path.parent.parts[-2:])),
+                            inputs, embedded = embed_token_multimodal_qwen2_5vl(prompt=prompt, processor_id=str(Path(*checkpoint_path.parent.parts[-2:])),
                                                             device=device, images=question['images'], vision_modules=vision_modules,
                                                             embed_tokens=model.tok_embeddings, dtype=precision)
-                           encoded = inputs['input_ids']
-                           image_grid_thw = inputs['image_grid_thw']
+                            encoded = inputs['input_ids']
+                            image_grid_thw = inputs['image_grid_thw']
+
                         elif 'llava' in str(checkpoint_path):
                             encoded, embedded = embed_tokens_multimodal(
                                 prompt=prompt, tokenizer=tokenizer, config=model.config.mm_config,
