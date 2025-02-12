@@ -9,11 +9,11 @@ from typing import List, Optional
 import torch
 import torch.distributed as dist
 from torch import nn
-if os.uname().sysname != "Darwin":
-    from torch.distributed import _functional_collectives as funcol
-else:
-    # Distributed is not supported on MacOS
-    funcol = None
+# if os.uname().sysname != "Darwin":
+#     from torch.distributed import _functional_collectives as funcol
+# else:
+#     # Distributed is not supported on MacOS
+#     funcol = None
 
 from model import Attention, FeedForward, Transformer
 from quantize import WeightOnlyInt4Linear
@@ -121,7 +121,8 @@ def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = [
 
     # shape info should still be synced
     # assert linear.weight.shape == (linear.out_features, linear.in_features)
-
+def reduce_hook_function(module, input, output):
+    dist.all_reduce(output[0], op=dist.ReduceOp.SUM)
 
 def _apply_tp_ffn(mlp: FeedForward) -> None:
     assert hasattr(mlp, "w1")
@@ -133,20 +134,18 @@ def _apply_tp_ffn(mlp: FeedForward) -> None:
     _apply_tp_linear(mlp.w2, "rowwise")
 
     world_size = _get_world_size()
-    mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output, "sum", list(range(world_size))))
+    # mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
+    #     output, "sum", list(range(world_size))))
     # # Create a process group without name
-    # if not dist.is_initialized():
-    #     dist.init_process_group(backend="nccl")
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
     
-    # # Store the process group as a module attribute to prevent recreation
-    # if not hasattr(mlp, 'process_group'):
-    #     ranks = list(range(world_size))
-    #     mlp.process_group = dist.new_group(ranks=ranks)
+    # Store the process group as a module attribute to prevent recreation
+    if not hasattr(mlp, 'process_group'):
+        ranks = list(range(world_size))
+        mlp.process_group = dist.new_group(ranks=ranks)
     
-    # mlp.register_forward_hook(
-    #     lambda _module, _input, output: funcol.all_reduce(output, "sum", group=mlp.process_group)
-    # )
+    mlp.register_forward_hook(reduce_hook_function)
 
 
 def _apply_tp_attn(attn: Attention) -> None:
@@ -169,20 +168,18 @@ def _apply_tp_attn(attn: Attention) -> None:
     attn.head_dim = attn.dim // attn.n_head
     attn.n_local_heads = attn.n_local_heads // world_size
 
-    attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-        output[0], "sum", list(range(world_size))))
+    # attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
+    #     output[0], "sum", list(range(world_size))))
     # # Create a process group without name
-    # if not dist.is_initialized():
-    #     dist.init_process_group(backend="nccl")
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
     
-    # # Store the process group as a module attribute to prevent recreation
-    # if not hasattr(attn, 'process_group'):
-    #     ranks = list(range(world_size))
-    #     attn.process_group = dist.new_group(ranks=ranks)
-    
-    # attn.register_forward_hook(
-    #     lambda _module, _input, output: funcol.all_reduce(output[0], "sum", group=attn.process_group)
-    # )
+    # Store the process group as a module attribute to prevent recreation
+    if not hasattr(attn, 'process_group'):
+        ranks = list(range(world_size))
+        attn.process_group = dist.new_group(ranks=ranks)
+        
+    attn.register_forward_hook(reduce_hook_function)
 
 
 def _apply_tp_Transformer(Transformer: Transformer) -> None:
