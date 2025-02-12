@@ -401,35 +401,35 @@ def prepare_inputs_labels_for_multimodal(input_ids,
     return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
 
 
-def embed_tokens_multimodal(
-        prompt,
-        tokenizer,
-        config,
-        device,
-        images,
-        vision_modules,
-        embed_tokens,
-        dtype=torch.float16
-    ):
-    image_tensor = process_images(images, vision_modules.vision_tower.image_processor, config)
-    image_tensor = [_image.to(dtype=dtype, device=device) for _image in image_tensor]
-    input_ids = tokenizer_image_token(
-                        prompt, 
-                        tokenizer,
-                        IMAGE_TOKEN_INDEX,
-                        return_tensors="pt"
-                    ).unsqueeze(0).to(device)
-    embeds = prepare_inputs_labels_for_multimodal(input_ids, None, None, None, None, 
-                                image_tensor,
-                                config=config,
-                                vision_tower=vision_modules.vision_tower,
-                                mm_projector=vision_modules.mm_projector,
-                                embed_tokens=embed_tokens,
-                                device=device,
-                                modalities=["image"],
-                                image_newline=vision_modules.image_newline, 
-                                image_sizes=[img.size for img in images])
-    return input_ids, embeds[4].to(dtype=dtype)
+# def embed_tokens_multimodal(
+#         prompt,
+#         tokenizer,
+#         config,
+#         device,
+#         images,
+#         vision_modules,
+#         embed_tokens,
+#         dtype=torch.float16
+#     ):
+#     image_tensor = process_images(images, vision_modules.vision_tower.image_processor, config)
+#     image_tensor = [_image.to(dtype=dtype, device=device) for _image in image_tensor]
+#     input_ids = tokenizer_image_token(
+#                         prompt, 
+#                         tokenizer,
+#                         IMAGE_TOKEN_INDEX,
+#                         return_tensors="pt"
+#                     ).unsqueeze(0).to(device)
+#     embeds = prepare_inputs_labels_for_multimodal(input_ids, None, None, None, None, 
+#                                 image_tensor,
+#                                 config=config,
+#                                 vision_tower=vision_modules.vision_tower,
+#                                 mm_projector=vision_modules.mm_projector,
+#                                 embed_tokens=embed_tokens,
+#                                 device=device,
+#                                 modalities=["image"],
+#                                 image_newline=vision_modules.image_newline, 
+#                                 image_sizes=[img.size for img in images])
+#     return input_ids, embeds[4].to(dtype=dtype)
 
 ####### Utils ########
 def unpad_image(tensor, original_size):

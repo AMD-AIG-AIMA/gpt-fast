@@ -137,40 +137,6 @@ def build_vision_resampler(model_args, delay_load=False, **kwargs):
         return IdentityMap()
     raise ValueError(f"Unknown resampler type: {resampler_type}")
 
-
-class VisionModule(nn.Module):
-    def __init__(
-        self,
-        config,
-        checkpoint_path=None,
-        dtype=torch.float16
-    ):
-        """Vision module containing visual processing components.
-        
-        Args:
-            config: Model configuration.
-            checkpoint_path: Path to the checkpoint.
-            dtype: Data type for the model.
-        """
-        super().__init__()
-        self.config = config
-        self.delay_load = getattr(config, "delay_load", False)
-        self.vision_tower = build_vision_tower(config, delay_load=self.delay_load)
-        self.vision_resampler = build_vision_resampler(config, vision_tower=self.vision_tower)
-        self.mm_projector = build_vision_projector(config, vision_cfg=self.vision_tower)
-        self.image_newline = None
-        if "unpad" in getattr(config, "mm_patch_merge_type", ""):
-            self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=dtype))
-
-        if checkpoint_path is not None:
-            self.load_state_dict(torch.load(checkpoint_path, weights_only=True))
-
-        return
-
-    def forward(self, x):
-        # each module has its own forward method
-        pass
-
 ############## Image Encoder ##############
 
 class SigLipImageProcessor:

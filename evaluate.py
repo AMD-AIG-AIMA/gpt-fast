@@ -15,8 +15,7 @@ from typing import Optional, Tuple, Union
 from tp import maybe_init_dist, _get_rank
 from model import Transformer
 from tokenizer import get_tokenizer
-from multimodal.llava.builder import VisionModule
-from multimodal.llava.preprocessing import embed_tokens_multimodal
+from multimodal.vision_modules import VisionModule
 
 from time_profiler import TimeProfiler
 TimeProfiler.set_warm_up(0)
@@ -518,8 +517,10 @@ def main(
         torch.set_default_dtype(precision)
         torch.set_default_device(device)
         vision_checkpoints = str(checkpoint_path.parent / "vision_modules.pth")
-        vision_modules = VisionModule(model.config.mm_config, dtype=precision, checkpoint_path=vision_checkpoints)
-        vision_modules.requires_grad_(False) 
+        vision_modules = VisionModule.from_name(checkpoint_path.parent.name, 
+                                                config=model.config.mm_config, 
+                                                checkpoint_path=vision_checkpoints,
+                                                dtype=precision)
         vision_modules.eval()
     else:
         vision_modules = None
@@ -530,8 +531,10 @@ def main(
         draft_multimodal =  getattr(draft_model.config, "mm_config", None) is not None
         if draft_multimodal:
             draft_vision_checkpoints = str(draft_checkpoint_path.parent / "vision_modules.pth")
-            draft_vision_modules = VisionModule(draft_model.config.mm_config, dtype=precision,checkpoint_path=draft_vision_checkpoints)
-            draft_vision_modules.requires_grad_(False) 
+            draft_vision_modules = VisionModule.from_name(draft_checkpoint_path.parent.name, 
+                                                        config=draft_model.config.mm_config, 
+                                                        checkpoint_path=draft_vision_checkpoints,
+                                                        dtype=precision)
             draft_vision_modules.eval()
         else:
             draft_vision_modules = None
@@ -617,16 +620,14 @@ def main(
             else:
                 with TimeProfiler("Embedding"):
                     with torch.inference_mode():
-                        encoded, embedded = embed_tokens_multimodal(
-                            prompt=prompt, tokenizer=tokenizer, config=model.config.mm_config,
-                            device=device, images=question["images"], vision_modules=vision_modules,
-                            embed_tokens=model.tok_embeddings, dtype=precision
+                        encoded, embedded = vision_modules(
+                            prompt=prompt, tokenizer=tokenizer, images=question["images"],
+                            embed_tokens=model.tok_embeddings, 
                         )
                         if is_speculative and draft_multimodal:
-                            _, draft_embedded = embed_tokens_multimodal(
-                                prompt=prompt, tokenizer=tokenizer, config=draft_model.config.mm_config,
-                                device=device, images=question["images"], vision_modules=draft_vision_modules,
-                                embed_tokens=draft_model.tok_embeddings, dtype=precision
+                            _, draft_embedded = draft_vision_modules(
+                                prompt=prompt, tokenizer=tokenizer, images=question["images"],
+                                embed_tokens=draft_model.tok_embeddings, 
                             )
                             draft_encoded = None
                         elif is_speculative and not draft_multimodal:
