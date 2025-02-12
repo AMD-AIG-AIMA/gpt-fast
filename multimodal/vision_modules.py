@@ -115,7 +115,7 @@ class LlavaVisionModule(VisionModule):
         dtype: torch.dtype = torch.float16,
         device: Optional[Union[str, torch.device]] = None
     ):
-        super().__init__(config, checkpoint_path, dtype, device)
+        super().__init__(config, dtype, device)
         from llava.builder import build_vision_tower, build_vision_resampler, build_vision_projector
         self.delay_load = getattr(config, "delay_load", False)
         self.vision_tower = build_vision_tower(config, delay_load=self.delay_load)
