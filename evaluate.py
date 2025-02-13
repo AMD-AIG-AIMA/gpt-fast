@@ -290,6 +290,7 @@ def generate(
     draft_embedded: Optional[torch.Tensor] = None,
     image_grid_thw: Optional[torch.Tensor] = None,
     max_seq_length: Optional[int] = None,
+    draft_max_seq_length: Optional[int] = None,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
@@ -316,16 +317,19 @@ def generate(
     embed_seq_length = embed_seq_length + speculate_k + 1 if is_speculative else embed_seq_length
     text_seq_length = text_seq_length + speculate_k + 1 if is_speculative else text_seq_length
     draft_text_seq_length = draft_encoded.size(-1) + speculate_k + 1 + max_new_tokens if draft_encoded is not None else text_seq_length
-    if max_seq_length is None:
-        max_seq_length = embed_seq_length
+    draft_mm_seq_length = draft_embedded.size(-2) + speculate_k + 1 + max_new_tokens if draft_embedded is not None else embed_seq_length
+
+    if draft_max_seq_length is None:
         if is_speculative:
-            if draft_embedded is not None:
-                draft_max_seq_length = embed_seq_length
+            if max_seq_length is not None:
+                draft_max_seq_length = max_seq_length
             else:
-                draft_max_seq_length = draft_text_seq_length
-    elif is_speculative:
-        draft_max_seq_length = max_seq_length
-        
+                if draft_embedded is not None:
+                    draft_max_seq_length = draft_mm_seq_length
+                else:
+                    draft_max_seq_length = draft_text_seq_length
+    if max_seq_length is None:
+        max_seq_length = embed_seq_length    
     if multimodal and (mrope or draft_mrope):
         position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=image_grid_thw, mm_config=model.config.mm_config)
     if not multimodal:
@@ -339,6 +343,7 @@ def generate(
             if draft_embedded is not None:
                 # Draft is multimodal
                 if draft_mrope:
+                    print('test')
                     draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length, mrope=True, position_ids=position_ids)
                 else:
                     draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length)
@@ -352,7 +357,12 @@ def generate(
     prompt = prompt.view(1, -1).repeat(batch_size, 1)
     seq[:, :input_text_length] = prompt
     input_pos = torch.arange(0, input_embed_length, device=device)
-    draft_input_pos = torch.arange(0, draft_encoded.size(-1), device=device) if draft_encoded is not None else input_pos
+    if draft_embedded is not None:
+        draft_input_pos = torch.arange(0, draft_embedded.size(-2), device=device)
+    elif draft_encoded is not None:
+        draft_input_pos = torch.arange(0, draft_encoded.size(-1), device=device)
+    else:
+        draft_input_pos = input_pos
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
@@ -362,7 +372,7 @@ def generate(
             next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
         if is_speculative:
             if draft_multimodal:
-                prefill(draft_model, draft_embedded, input_pos, embedded=True, **sampling_kwargs)
+                prefill(draft_model, draft_embedded, draft_input_pos, embedded=True, **sampling_kwargs)
             elif multimodal:
                 # Target multimodal, draft text only
                 prefill(draft_model, draft_encoded.view(batch_size, -1) , draft_input_pos, **sampling_kwargs)
@@ -375,8 +385,15 @@ def generate(
     accept_counts = [0] * (speculate_k + 1)
 
     if is_speculative:
-        input_pos = input_pos.item()  # for speculative decoding easier to keep on host
-        draft_input_pos = draft_encoded.size(-1) if draft_encoded is not None else input_pos
+        input_pos = input_pos.item()  # for speculative decoding easier to keep on host\
+            
+        if draft_embedded is not None:
+            draft_input_pos = draft_embedded.size(-2)
+        elif draft_encoded is not None:
+            draft_input_pos = draft_encoded.size(-1)
+        else:
+            draft_input_pos = input_pos        
+        
         max_pos = embed_seq_length - 1 - (speculate_k + 1)
         while input_pos < max_pos:
             cur_token = next_token.view(())
@@ -624,6 +641,7 @@ def main(
                 callback=lambda x: x,
                 do_block_verify=do_block_verify,
                 max_seq_length = args.max_seq_length,
+                draft_max_seq_length = args.draft_max_seq_length,
 
             )
 
@@ -694,6 +712,8 @@ def main(
                     draft_mrope=True if 'Qwen' in str(draft_checkpoint_path) else False,
                     image_grid_thw=image_grid_thw,
                     max_seq_length = args.max_seq_length,
+                    draft_max_seq_length = args.draft_max_seq_length,
+
                 )
             end_time = time.time()
             
@@ -734,9 +754,9 @@ def main(
     
     if rank == 0 or rank is None:
         if args.compile:
-            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}_compile.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_compile.json")
+            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}_speculative_k_{args.speculate_k}_compile.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_compile.json")
         else:
-            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}.json")
+            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}_speculative_k_{args.speculate_k}.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}.json")
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         
@@ -778,12 +798,15 @@ if __name__ == '__main__':
     parser.add_argument('--num_questions', type=int, default=None, help='Number of questions to evaluate')
     parser.add_argument('--warmup', type=int, default=5, help='Number of warmup steps')
     parser.add_argument('--do_block_verify', action='store_true', help='Whether to verify with block acceptance probability')
-    parser.add_argument("--random_seed", default=1234, type=int, help="Random seed")
+    parser.add_argument("--random_seed", default=None, type=int, help="Random seed")
     parser.add_argument("--max_seq_length", default=None, type=int, help="Maximum sequence length for the model")
+    parser.add_argument("--draft_max_seq_length", default=None, type=int, help="Maximum sequence length for the draft model")
+
+    
 
     args = parser.parse_args()
     if args.random_seed:
-            torch.manual_seed(args.random_seed)
+        torch.manual_seed(args.random_seed)
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
          args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
          args.warmup, args.do_block_verify)
