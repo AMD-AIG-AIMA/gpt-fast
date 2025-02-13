@@ -113,6 +113,12 @@ transformer_configs = {
     "Qwen2.5-VL-72B-Instruct":dict(block_size=32768, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=29568, vocab_size=152064,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-72B-Instruct")
     ),
+    "Qwen2.5-3B-Instruct":dict(block_size=32768, n_layer=36, n_head=16, n_local_heads=2, dim=2048, intermediate_size=11008, vocab_size=151936,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True,
+    ),
+    "Qwen2.5-7B-Instruct":dict(block_size=131072, n_layer=28, n_head=28, n_local_heads=4, dim=3584, intermediate_size=18944, vocab_size=152064,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True,
+    ),
 }
 
 class KVCache(nn.Module):

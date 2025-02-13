@@ -103,7 +103,6 @@ def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = Non
     logits = logits / max(temperature, 1e-5)
 
     if top_k is not None:
-        print('I really should not be here')
         v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
         pivot = v.select(-1, -1).unsqueeze(-1)
         logits = torch.where(logits < pivot, -float("Inf"), logits)
@@ -553,6 +552,7 @@ def main(
     if is_speculative:
         print(f"Loading draft model from {draft_checkpoint_path}")
         draft_model = _load_model(draft_checkpoint_path, device, precision, use_tp=False)
+        draft_model.requires_grad_(False) 
         draft_multimodal =  getattr(draft_model.config, "mm_config", None) is not None
         if draft_multimodal:
             draft_vision_checkpoints = str(draft_checkpoint_path.parent / "vision_modules.pth")
@@ -728,7 +728,10 @@ def main(
         })
     
     if rank == 0 or rank is None:
-        output_file = Path(f"./results_{bench_name}.json")
+        if args.compile:
+            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}_compile.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_compile.json")
+        else:
+            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}.json")
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         
