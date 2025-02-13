@@ -317,10 +317,15 @@ def generate(
     text_seq_length = text_seq_length + speculate_k + 1 if is_speculative else text_seq_length
     draft_text_seq_length = draft_encoded.size(-1) + speculate_k + 1 + max_new_tokens if draft_encoded is not None else text_seq_length
     if max_seq_length is None:
-        if draft_embedded is not None:
-            max_seq_length = embed_seq_length
-        else:
-            max_seq_length = draft_text_seq_length
+        max_seq_length = embed_seq_length
+        if is_speculative:
+            if draft_embedded is not None:
+                draft_max_seq_length = embed_seq_length
+            else:
+                draft_max_seq_length = draft_text_seq_length
+    elif is_speculative:
+        draft_max_seq_length = max_seq_length
+        
     if multimodal and (mrope or draft_mrope):
         position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=image_grid_thw, mm_config=model.config.mm_config)
     if not multimodal:
@@ -334,12 +339,12 @@ def generate(
             if draft_embedded is not None:
                 # Draft is multimodal
                 if draft_mrope:
-                    draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length, mrope=True, position_ids=position_ids)
+                    draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length, mrope=True, position_ids=position_ids)
                 else:
-                    draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
+                    draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length)
             else:
                 # Draft is text only
-                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length)
+                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length)
 
     # create an empty tensor of the expected final shape and fill in the current tokens
     seq = torch.empty(batch_size, text_seq_length, dtype=dtype, device=device)
