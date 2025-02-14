@@ -330,8 +330,10 @@ def generate(
                     draft_max_seq_length = draft_text_seq_length
     if max_seq_length is None:
         max_seq_length = embed_seq_length    
-    if multimodal and (mrope or draft_mrope):
+    if multimodal and mrope:
         position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=image_grid_thw, mm_config=model.config.mm_config)
+    if draft_multimodal and draft_mrope:
+            draft_position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=image_grid_thw, mm_config=draft_model.config.mm_config)
     if not multimodal:
         assert text_seq_length == embed_seq_length, "Text-only model should have the same embed_seq_length as text_seq_length"
     with torch.device(device):
@@ -343,7 +345,7 @@ def generate(
             if draft_embedded is not None:
                 # Draft is multimodal
                 if draft_mrope:
-                    draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length, mrope=True, position_ids=position_ids)
+                    draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length, mrope=True, position_ids=draft_position_ids)
                 else:
                     draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length)
             else:
