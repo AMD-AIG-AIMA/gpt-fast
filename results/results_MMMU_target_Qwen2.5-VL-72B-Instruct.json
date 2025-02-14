@@ -1,0 +1,82 @@
+[
+  {
+    "question_id": 0,
+    "turns": [
+      "Rodin's \"The Burghers of Calais\" marked a significant departure from established traditions of sculpture in several ways:\n\n1. **Realism and Individuality**: Unlike traditional heroic or idealized sculptures, Rodin portrayed each of the six burghers with extraordinary realism and individuality. Each figure has a distinct appearance, expression, and posture, reflecting their emotional state and individual personalities. This was a departure from the uniformity and idealized beauty that were common in classical sculpture.\n\n2."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      8.12344765663147
+    ],
+    "speed": [
+      12.31004423575824
+    ],
+    "accept_counts": null
+  },
+  {
+    "question_id": 1,
+    "turns": [
+      "The artwork you've provided is \"The M\u00e9rode Altarpiece,\" created by the Early Netherlandish painter Robert Campin, who was also known as the Master of Fl\u00e9malle. This piece is a prime example of the Northern Renaissance period, which occurred roughly between the late 14th century and the early 16th century. \n\nThe Northern Renaissance was characterized by an increased focus on realism, intricate details, and a deep appreciation for the natural world, as well as"
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      8.697620630264282
+    ],
+    "speed": [
+      11.49739730565386
+    ],
+    "accept_counts": null
+  },
+  {
+    "question_id": 2,
+    "turns": [
+      "To keep rhythm exciting and active, **variety** is essential. In the context of the image provided, which shows a modern dining area with a patterned wall, the rhythm in the design is kept exciting and active through a combination of varying elements such as differing lengths and widths of the wooden slats, the alternating use of wood and white surfaces, and the strategic placement of furniture. These elements create a dynamic visual rhythm that engages the viewer and prevents monotony."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      8.388538837432861
+    ],
+    "speed": [
+      11.921027241807815
+    ],
+    "accept_counts": null
+  },
+  {
+    "question_id": 3,
+    "turns": [
+      "Provide at least 15\" of landing area on the handle side of a **door**.\n\nThe diagram appears to illustrate the necessary clearance and dimensions for accessible doorways, ensuring that there is sufficient space for maneuvering, particularly for individuals using mobility aids. The 15\" landing area on the handle side of the door helps ensure that there is enough room to comfortably open and close the door, reducing the risk of obstruction or difficulty in accessing the doorway."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      8.400076150894165
+    ],
+    "speed": [
+      11.904653982137445
+    ],
+    "accept_counts": null
+  },
+  {
+    "question_id": 4,
+    "turns": [
+      "The image represents a monochromatic color scheme. Monochromatic schemes are based on a single color, using various shades and tints of that color. In this image, the rose is depicted using different shades of blue, creating a cohesive and unified visual effect. There is no use of adjacent colors on the color wheel, which would be characteristic of an analogous color scheme."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      8.448676824569702
+    ],
+    "speed": [
+      11.836172938842774
+    ],
+    "accept_counts": null
+  }
+]

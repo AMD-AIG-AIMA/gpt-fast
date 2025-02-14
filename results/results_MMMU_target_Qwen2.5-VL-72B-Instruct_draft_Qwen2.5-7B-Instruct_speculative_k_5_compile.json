@@ -1,0 +1,117 @@
+[
+  {
+    "question_id": 0,
+    "turns": [
+      "Rodin's 'The Burghers of Calais' signaled his departure from established traditions of sculpture in several ways:\n\n1. **Realism and Individuality**: Unlike traditional heroic statues, Rodin focused on the emotional and psychological states of ordinary people. Each figure in the sculpture appears unique and individual, with distinct postures and expressions that convey suffering and resignation. This emphasis on realism and the depiction of raw human emotion was a departure from the idealized and heroic styles prevalent at the time.\n\n2. **"
+    ],
+    "tokens_generated": [
+      102
+    ],
+    "walltime": [
+      4.084291458129883
+    ],
+    "speed": [
+      24.973731930165386
+    ],
+    "accept_counts": [
+      12,
+      8,
+      5,
+      0,
+      2,
+      8
+    ]
+  },
+  {
+    "question_id": 1,
+    "turns": [
+      "The triptych you've shown is \"The Merode Altarpiece,\" created by the artist Robert Campin, also known as the Master of Fl\u00e9malle, around 1425-1428. This work is a prime example of Northern Renaissance art, a period that spanned roughly from the 15th to the early 16th century in Northern Europe, particularly in countries like the Netherlands, Belgium, and Germany.\n\n### Characteristics of Northern Renaissance Art:\n1. **"
+    ],
+    "tokens_generated": [
+      103
+    ],
+    "walltime": [
+      4.1290442943573
+    ],
+    "speed": [
+      24.94523978363674
+    ],
+    "accept_counts": [
+      9,
+      5,
+      5,
+      1,
+      2,
+      9
+    ]
+  },
+  {
+    "question_id": 2,
+    "turns": [
+      "To keep rhythm exciting and active, **variety** is essential. This can be seen in the image where the design of the wall uses a combination of different elements\u2014wood, white panels, and patterns\u2014to create an engaging and dynamic visual rhythm. The spacing and repetition of these elements also contribute to a sense of movement and interest, preventing monotony."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      5.281876564025879
+    ],
+    "speed": [
+      18.932665083672344
+    ],
+    "accept_counts": [
+      22,
+      15,
+      6,
+      0,
+      1,
+      4
+    ]
+  },
+  {
+    "question_id": 3,
+    "turns": [
+      "The image you provided is a standard kitchen layout diagram, likely illustrating accessibility requirements for a sink. The blank in your sentence should be filled with \"sink.\" \n\nThe relevant portion of the diagram shows the sink located in a corner with dimensions around it indicating the required clearances. According to accessibility guidelines, there should be at least 15 inches of landing area on the handle side of the sink. This landing area is essential to provide sufficient space for users, especially for individuals with disabilities, to maneuver and"
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      4.678182125091553
+    ],
+    "speed": [
+      21.589582726650132
+    ],
+    "accept_counts": [
+      19,
+      9,
+      4,
+      1,
+      1,
+      7
+    ]
+  },
+  {
+    "question_id": 4,
+    "turns": [
+      "The image of the blue rose represents a monochromatic color scheme. Monochromatic color schemes use different shades, tints, and tones of a single color. In this case, the image uses various shades of blue to create depth and dimension within the flower."
+    ],
+    "tokens_generated": [
+      104
+    ],
+    "walltime": [
+      5.111518859863281
+    ],
+    "speed": [
+      20.34620292935429
+    ],
+    "accept_counts": [
+      20,
+      8,
+      3,
+      1,
+      0,
+      9
+    ]
+  }
+]

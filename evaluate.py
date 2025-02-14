@@ -343,7 +343,6 @@ def generate(
             if draft_embedded is not None:
                 # Draft is multimodal
                 if draft_mrope:
-                    print('test')
                     draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length, mrope=True, position_ids=position_ids)
                 else:
                     draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length)
@@ -754,9 +753,9 @@ def main(
     
     if rank == 0 or rank is None:
         if args.compile:
-            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}_speculative_k_{args.speculate_k}_compile.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_compile.json")
+            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}_speculative_k_{args.speculate_k}_compile_{str(time.time()).split('.')[-1]}.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_compile_{str(time.time()).split('.')[-1]}.json")
         else:
-            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}_speculative_k_{args.speculate_k}.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}.json")
+            output_file = Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_draft_{str(draft_checkpoint_path.parent.name)}_speculative_k_{args.speculate_k}_{str(time.time()).split('.')[-1]}.json") if is_speculative else Path(f"./results_{bench_name}_target_{str(checkpoint_path.parent.name)}_{str(time.time()).split('.')[-1]}.json")
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         
@@ -789,7 +788,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint_path', type=Path, required=True, help='Path to the model checkpoint')
     parser.add_argument('--max_new_tokens', type=int, default=100, help='Maximum number of new tokens to generate')
     parser.add_argument('--temperature', type=float, default=0.8, help='Temperature for sampling')
-    parser.add_argument('--top_k', type=int, default=None, help='Top-k for sampling')
+    parser.add_argument('--top_k', type=int, default=1, help='Top-k for sampling')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation')
     parser.add_argument('--draft_checkpoint_path', type=Path, default=None, help='Path to the draft model checkpoint for speculative decoding')
     parser.add_argument('--speculate_k', type=int, default=5, help='Speculative execution depth')

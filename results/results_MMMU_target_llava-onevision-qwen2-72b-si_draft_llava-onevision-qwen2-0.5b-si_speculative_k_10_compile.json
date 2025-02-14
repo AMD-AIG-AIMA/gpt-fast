@@ -1,0 +1,142 @@
+[
+  {
+    "question_id": 0,
+    "turns": [
+      "The innovation seen in Rodin's 'The Burghers of Calais' that signaled his departure from established traditions of sculpture is the emphasis on realism and the depiction of emotion through the figures' dynamic poses and expressions. Unlike classical sculptures that often portrayed idealized and static figures, Rodin's work captures the individuality and suffering of the six burghers. The rough, unfinished quality of the bronze, which was a departure from the smooth surfaces of traditional sculptures, further adds to the emotional impact"
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      5.214595079421997
+    ],
+    "speed": [
+      19.176944417913333
+    ],
+    "accept_counts": [
+      17,
+      7,
+      7,
+      2,
+      1,
+      2,
+      0,
+      0,
+      0,
+      0,
+      2
+    ]
+  },
+  {
+    "question_id": 1,
+    "turns": [
+      "The art in the image comes from the Gothic period, characterized by the use of vibrant colors, detailed scenes, and intricate architectural elements which were typical of the art created during this time."
+    ],
+    "tokens_generated": [
+      102
+    ],
+    "walltime": [
+      6.2516374588012695
+    ],
+    "speed": [
+      16.31572538749842
+    ],
+    "accept_counts": [
+      6,
+      5,
+      5,
+      4,
+      5,
+      2,
+      1,
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  {
+    "question_id": 2,
+    "turns": [
+      "To keep rhythm exciting and active, the use of contrasting colors and dynamic patterns on the walls, along with well-placed lighting, creates a visually engaging environment that complements the movement and energy of the space."
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      4.110974311828613
+    ],
+    "speed": [
+      24.568385092893934
+    ],
+    "accept_counts": [
+      12,
+      1,
+      3,
+      2,
+      1,
+      2,
+      3,
+      0,
+      1,
+      0,
+      2
+    ]
+  },
+  {
+    "question_id": 3,
+    "turns": [
+      "The diagram shows a kitchen sink with accompanying measurements for the sink's dimensions and the countertop space. The sink appears to be rectangular with a smaller rectangle cut out in the center, possibly representing the faucet or a soap dispenser area. The countertop measurements indicate the space available for placing items near the sink.\n\nOn the left side of the sink, there is a label stating \"16\" which likely indicates the depth of the countertop on that side. Below the sink, there is a cylindrical object,"
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      4.798207759857178
+    ],
+    "speed": [
+      21.049526209554198
+    ],
+    "accept_counts": [
+      8,
+      8,
+      6,
+      3,
+      4,
+      3,
+      0,
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "question_id": 4,
+    "turns": [
+      "The image represents a monochromatic color scheme. Monochromatic schemes use varying shades, tints, and tones of a single color\u2014here, different shades of blue create depth and contrast within the rose's petals."
+    ],
+    "tokens_generated": [
+      102
+    ],
+    "walltime": [
+      4.111758232116699
+    ],
+    "speed": [
+      24.806906010009065
+    ],
+    "accept_counts": [
+      7,
+      5,
+      4,
+      4,
+      1,
+      1,
+      2,
+      0,
+      1,
+      0,
+      2
+    ]
+  }
+]

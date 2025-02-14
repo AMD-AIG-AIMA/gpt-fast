@@ -1,0 +1,142 @@
+[
+  {
+    "question_id": 0,
+    "turns": [
+      "Auguste Rodin's *The Burghers of Calais* signaled a departure from established traditions of sculpture in several innovative ways:\n\n1. **Realism and Emotional Expression**: Rodin emphasized realism and raw emotional expression over idealized beauty. The figures are depicted with flaws and shown in moments of deep sorrow and distress, reflecting the tragic historical event they represent.\n\n2. **Lack of Heroic Elevation**: Unlike traditional sculptures that often placed figures on pedestals to elevate them, Rodin had"
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      3.9452152252197266
+    ],
+    "speed": [
+      25.600631203681633
+    ],
+    "accept_counts": [
+      7,
+      6,
+      5,
+      5,
+      3,
+      2,
+      0,
+      0,
+      1,
+      1,
+      0
+    ]
+  },
+  {
+    "question_id": 1,
+    "turns": [
+      "The artwork in the image is \"The Merode Altarpiece,\" also known as \"The Annunciation,\" created by Robert Campin, who was active during the Early Netherlandish period. This period is a part of Northern Renaissance art, which flourished in the 15th and early 16th centuries in the Low Countries. The style is characterized by detailed realism, intricate backgrounds, and a heightened sense of individuality in the characters depicted, which are all evident in this"
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      5.020350217819214
+    ],
+    "speed": [
+      19.918929090855123
+    ],
+    "accept_counts": [
+      15,
+      7,
+      4,
+      6,
+      1,
+      1,
+      1,
+      2,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "question_id": 2,
+    "turns": [
+      "To keep rhythm exciting and active, **variety** is essential. \n\nIn terms of design, the image shows a pattern that uses repeated elements (the wooden slats), but the rhythm is made more exciting by the introduction of variety in the form of different colors (white and brown sections) and irregular spacing. This variety adds visual interest and prevents the rhythm from becoming monotonous. The same principle applies in music and other forms of rhythm, where changes in notes, beats, or tempo keep the rhythm"
+    ],
+    "tokens_generated": [
+      102
+    ],
+    "walltime": [
+      5.269827365875244
+    ],
+    "speed": [
+      19.35547275428808
+    ],
+    "accept_counts": [
+      20,
+      10,
+      5,
+      1,
+      4,
+      1,
+      1,
+      0,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "question_id": 3,
+    "turns": [
+      "The image shows a kitchen layout with a sink, and it appears to be illustrating the accessible design requirements for the landing area around a sink's handle side. The specific area should have at least 15 inches of clearance to provide room for maneuvering and accessibility. \n\nConsidering the layout, the missing word in the sentence should likely refer to the sink. Thus, the complete sentence would be:\n\n\"Provide at least 15 inches of landing area on the handle side of a **sink**.\"\n\nThe"
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      4.699027061462402
+    ],
+    "speed": [
+      21.49381109726306
+    ],
+    "accept_counts": [
+      15,
+      11,
+      4,
+      2,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      2
+    ]
+  },
+  {
+    "question_id": 4,
+    "turns": [
+      "The image represents a **monochromatic color scheme**. \n\nA monochromatic color scheme uses different shades, tints, and tones of a single color. In this image, the rose is depicted using various shades of blue, from light to dark, creating depth and texture but staying within the blue spectrum. \n\nAn analogous color scheme, on the other hand, uses colors that are adjacent to each other on the color wheel, such as blue, blue-green, and green. This image does not include"
+    ],
+    "tokens_generated": [
+      102
+    ],
+    "walltime": [
+      3.5313427448272705
+    ],
+    "speed": [
+      28.884197137026742
+    ],
+    "accept_counts": [
+      8,
+      6,
+      2,
+      2,
+      1,
+      0,
+      0,
+      0,
+      1,
+      2,
+      3
+    ]
+  }
+]

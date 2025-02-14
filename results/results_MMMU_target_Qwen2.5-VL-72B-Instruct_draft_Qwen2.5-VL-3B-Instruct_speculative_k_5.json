@@ -1,0 +1,117 @@
+[
+  {
+    "question_id": 0,
+    "turns": [
+      "Rodin's *The Burghers of Calais* signaled a departure from established traditions of sculpture in several key ways:\n\n1. **Realism and Expressiveness**: Unlike traditional sculpture that often idealized figures and emphasized heroic or idealized beauty, Rodin\u2019s work portrays the six burghers as ordinary men with individual, expressive faces that convey their suffering and deep emotional experience. This realist approach captures the raw humanity of the subjects, making them relatable rather than distant or divine.\n\n2. **Group"
+    ],
+    "tokens_generated": [
+      103
+    ],
+    "walltime": [
+      7.976353645324707
+    ],
+    "speed": [
+      12.913168670796441
+    ],
+    "accept_counts": [
+      6,
+      5,
+      6,
+      3,
+      4,
+      6
+    ]
+  },
+  {
+    "question_id": 1,
+    "turns": [
+      "The artwork you are referring to is the \"Merode Altarpiece,\" also known as the \"Annunciation Triptych,\" created by the Netherlandish painter Robert Campin, assisted by Rogier van der Weyden. This triptych is a prime example of the Early Netherlandish painting style, which is part of the Northern Renaissance period. The Northern Renaissance occurred roughly between the 15th and 16th centuries and was characterized by a high level of detail"
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      8.351311922073364
+    ],
+    "speed": [
+      12.093908231717075
+    ],
+    "accept_counts": [
+      5,
+      7,
+      4,
+      5,
+      5,
+      4
+    ]
+  },
+  {
+    "question_id": 2,
+    "turns": [
+      "To keep rhythm exciting and active, **variety** is essential. This applies not just to music, but also to design, as seen in the image. The wall pattern here introduces a dynamic rhythm with its alternating light and dark wooden slats, creating visual interest and preventing the space from feeling monotonous. The interplay of these elements keeps the rhythm visually engaging."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      9.31494426727295
+    ],
+    "speed": [
+      10.735437285581966
+    ],
+    "accept_counts": [
+      9,
+      9,
+      8,
+      1,
+      4,
+      4
+    ]
+  },
+  {
+    "question_id": 3,
+    "turns": [
+      "Provide at least 15\" of landing area on the handle side of a refrigerator."
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      6.442884922027588
+    ],
+    "speed": [
+      15.676207354672899
+    ],
+    "accept_counts": [
+      2,
+      6,
+      1,
+      0,
+      1,
+      13
+    ]
+  },
+  {
+    "question_id": 4,
+    "turns": [
+      "The image you provided represents a **monochromatic color scheme**. \n\nIn a monochromatic color scheme, different shades, tints, and tones of a single color are used. In this case, the image uses various shades of blue, ranging from light to dark, creating a harmonious and unified appearance.\n\nAn **analogous color scheme**, on the other hand, involves colors that are adjacent to each other on the color wheel, such as blue, blue-green, and green. This"
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      6.386768102645874
+    ],
+    "speed": [
+      15.81394507781773
+    ],
+    "accept_counts": [
+      2,
+      3,
+      3,
+      3,
+      1,
+      11
+    ]
+  }
+]

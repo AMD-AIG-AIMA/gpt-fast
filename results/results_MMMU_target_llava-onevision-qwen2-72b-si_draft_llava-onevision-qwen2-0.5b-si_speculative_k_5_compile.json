@@ -1,0 +1,117 @@
+[
+  {
+    "question_id": 0,
+    "turns": [
+      "The innovation seen in Rodin's 'The Burghers of Calais' that signaled his departure from established traditions of sculpture is the depiction of the subjects in a realistic and emotionally charged manner. Unlike the idealized and heroic representations typical in classical sculpture, Rodin's burghers are portrayed with heavy robes, gaunt faces, and expressions of despair and resignation. The statue's rough, unfinished surface also challenged the conventional smooth and polished finish of traditional sculpture. This approach to realism and emotional depth"
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      5.029914617538452
+    ],
+    "speed": [
+      19.88105317957428
+    ],
+    "accept_counts": [
+      16,
+      10,
+      8,
+      1,
+      1,
+      5
+    ]
+  },
+  {
+    "question_id": 1,
+    "turns": [
+      "The image, featuring ornate details and vibrant colors in a domestic setting viewed through distinct panels, is reminiscent of the highly detailed and characteristic style of Netherlandish art of the Northern Renaissance. This period, spanning from the early 15th to the 16th century, is notable for the intricate craftsmanship and symbolism often found in the region's paintings."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      6.325065851211548
+    ],
+    "speed": [
+      15.810112076674315
+    ],
+    "accept_counts": [
+      11,
+      4,
+      7,
+      2,
+      3,
+      6
+    ]
+  },
+  {
+    "question_id": 2,
+    "turns": [
+      "To keep rhythm exciting and active, music is essential. In the image, the restaurant's ambiance is enhanced by the use of colors and design elements that contribute to a lively and energetic atmosphere. The wooden wall with a wave-like pattern and the contrasting colors can stimulate visual interest and complement the rhythm created by music, making the dining experience more engaging and enjoyable for the patrons."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      4.588653326034546
+    ],
+    "speed": [
+      21.792886255458022
+    ],
+    "accept_counts": [
+      13,
+      7,
+      1,
+      5,
+      5,
+      4
+    ]
+  },
+  {
+    "question_id": 3,
+    "turns": [
+      "Angle"
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      4.9021992683410645
+    ],
+    "speed": [
+      20.39900757315413
+    ],
+    "accept_counts": [
+      14,
+      9,
+      3,
+      5,
+      4,
+      3
+    ]
+  },
+  {
+    "question_id": 4,
+    "turns": [
+      "The image exemplifies an analogous color scheme, where hues close to each other on the color wheel are used to create a harmonious effect. We see a range of blue tones from deep navy to light sky blue in the petals of the rose, which are adjacent on the color wheel and work together to form a visually pleasing composition. This scheme is often used to create a sense of depth and fluidity in images."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      4.90630578994751
+    ],
+    "speed": [
+      20.381933838059826
+    ],
+    "accept_counts": [
+      14,
+      7,
+      6,
+      6,
+      1,
+      4
+    ]
+  }
+]

@@ -1,0 +1,142 @@
+[
+  {
+    "question_id": 0,
+    "turns": [
+      "Rodin's \"The Burghers of Calais\" marked a significant departure from traditional sculpture in a few key ways:\n\n1. **Expression of Realism and Human Emotion**: Unlike the idealized and heroic figures of classical sculpture, Rodin's Burghers are depicted in a raw and realistic manner, showing the weight of their suffering and grim resolve. Their expressions and postures convey a mixture of fear, determination, and sorrow, reflecting the psychological complexity of human beings.\n\n2. **Group"
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      12.044154644012451
+    ],
+    "speed": [
+      8.385810626419552
+    ],
+    "accept_counts": [
+      8,
+      5,
+      2,
+      4,
+      2,
+      2,
+      0,
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  {
+    "question_id": 1,
+    "turns": [
+      "The image you provided is a triptych, specifically \"The Merode Altarpiece,\" painted by Robert Campin and his workshop around 1425-1428. This work is a prime example of the Early Netherlandish painting style and is firmly rooted in the Northern Renaissance period. The Northern Renaissance, also known as the Early Netherlandish period, occurred roughly from the 15th to the early 16th century. It is characterized by detailed"
+    ],
+    "tokens_generated": [
+      101
+    ],
+    "walltime": [
+      16.665569067001343
+    ],
+    "speed": [
+      6.060399113522324
+    ],
+    "accept_counts": [
+      14,
+      8,
+      5,
+      3,
+      2,
+      4,
+      0,
+      0,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "question_id": 2,
+    "turns": [
+      "To keep rhythm exciting and active, **variation** is essential. \n\nIn the context of the image, which appears to be an interior design of a restaurant, the variation is introduced through the use of different materials, colors, and patterns on the wall. The contrast between the wooden slats and white sections creates a dynamic visual rhythm that draws attention and adds interest. This variation in design elements helps to keep the space from feeling monotonous and enhances the overall appeal."
+    ],
+    "tokens_generated": [
+      100
+    ],
+    "walltime": [
+      20.691211462020874
+    ],
+    "speed": [
+      4.832969794134672
+    ],
+    "accept_counts": [
+      26,
+      8,
+      5,
+      3,
+      3,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "question_id": 3,
+    "turns": [
+      "The image shows kitchen layout requirements that are likely related to accessibility guidelines, ensuring enough space for individuals to comfortably use appliances and fixtures. Considering the context and the provided diagram, the instruction likely pertains to providing adequate landing space for accessibility purposes.\n\nThe blank in the statement could be filled with \"appliance,\" \"counter,\" or \"fixture,\" depending on the specific context. In this case, since the 15\" of landing area is mentioned on the handle side, it is most likely referring to an \""
+    ],
+    "tokens_generated": [
+      102
+    ],
+    "walltime": [
+      19.477659702301025
+    ],
+    "speed": [
+      5.236768767859214
+    ],
+    "accept_counts": [
+      29,
+      4,
+      3,
+      3,
+      0,
+      0,
+      1,
+      2,
+      1,
+      0,
+      1
+    ]
+  },
+  {
+    "question_id": 4,
+    "turns": [
+      "The image you provided represents a **monochromatic color scheme**. A monochromatic color scheme is one where only one hue is used, but with varying levels of brightness and saturation. In this image, the rose is depicted in various shades of blue, creating a cohesive and harmonious appearance that is characteristic of monochromatic designs.\n\nAn **analogous color scheme**, on the other hand, involves colors that are adjacent to each other on the color wheel, such as blue, blue-green, and green. Since"
+    ],
+    "tokens_generated": [
+      105
+    ],
+    "walltime": [
+      14.684753656387329
+    ],
+    "speed": [
+      7.150273164734285
+    ],
+    "accept_counts": [
+      15,
+      5,
+      2,
+      3,
+      2,
+      1,
+      1,
+      2,
+      0,
+      0,
+      2
+    ]
+  }
+]
