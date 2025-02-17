@@ -4,11 +4,11 @@ python evaluate.py --bench_name mt_bench --checkpoint_path checkpoints/meta-llam
 import json
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Union, Dict
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from tqdm import tqdm
-from fastchat.model import get_conversation_template
+from conversation import get_conversation_template
 import itertools
 from typing import Optional, Tuple, Union
 
@@ -20,18 +20,7 @@ from multimodal.vision_modules import VisionModule
 from time_profiler import TimeProfiler
 TimeProfiler.set_warm_up(0)
 
-MODEL_TO_TEMPLATE = {
-    "llama-2-7b-chat": "llama-2-chat",
-    "llama-2-13b-chat": "llama-2-chat",
-    "llama-2-70b-chat": "llama-2-chat",
-    "mistral-7b-instruct": "mistral",
-    "mixtral-8x7b-instruct": "mistral",
-    "openchat-3.5": "openchat",
-    "llama-3.1": "llama-3.1",
-    "llama-3.2": "llama-3.2",
-    "qwen2": "qwen2",
-    # Add more mappings as needed
-}
+
 GPU_BANDWIDTH = {
     "MI325": 6e12,
     "MI300": 5.3e12,
@@ -85,12 +74,6 @@ def load_benchmark_data(bench_name, bench_args=None):
         raise ValueError(f"Unknown benchmark name: {bench_name}")
     return questions
 
-def get_model_template(model_name):
-    for key, template in MODEL_TO_TEMPLATE.items():
-        if key in model_name.lower():
-            return template
-    return "llama-2-chat"  # Default to llama-2-chat if no match found
-
 def multinomial_sample_one_no_sync(probs_sort): # Does multinomial sampling without a cuda synchronization
     q = torch.empty_like(probs_sort).exponential_(1)
     return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
@@ -110,23 +93,33 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     idx_next = multinomial_sample_one_no_sync(probs)
     return idx_next, probs
 
-def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, embedded: bool=False, **sampling_kwargs) -> torch.Tensor:
+def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, embedded: Optional[torch.Tensor]=None,
+            cross_states: Optional[torch.Tensor]=None, cross_attention_mask: Optional[Union[torch.Tensor, Dict]]=None, 
+            **sampling_kwargs) -> torch.Tensor:
     # input_pos: [B, S]
-    logits = model(x, input_pos, embedded=embedded)
+    if cross_attention_mask is not None:
+        cross_states = embedded.clone()
+        embedded = None
+    logits = model(x, input_pos, embedded=embedded, cross_states=cross_states, cross_attention_mask=cross_attention_mask)
     return sample(logits, **sampling_kwargs)[0]
 
-def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, 
+                     cross_attention_mask: Optional[Union[torch.Tensor, Dict]]=None,
+                    **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
     # input_pos: [B, 1]
     assert input_pos.shape[-1] == 1
-    logits = model(x, input_pos)
+    logits = model(x, input_pos, cross_attention_mask=cross_attention_mask)
     return sample(logits, **sampling_kwargs)
 
-def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torch.Tensor, num_new_tokens: int, callback=lambda _: _, **sampling_kwargs):
+def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torch.Tensor, 
+                    num_new_tokens: int, callback=lambda _: _, 
+                    cross_attention_mask: Optional[Union[torch.Tensor, Dict]]=None,
+                    **sampling_kwargs):
     new_tokens, new_probs = [], []
     for i in range(num_new_tokens):
         with sdpa_kernel([SDPBackend.MATH,SDPBackend.FLASH_ATTENTION]):
             next_token, next_prob = decode_one_token(
-                model, cur_token, input_pos, **sampling_kwargs
+                model, cur_token, input_pos, cross_attention_mask=cross_attention_mask, **sampling_kwargs
             )
             input_pos += 1
             new_tokens.append(next_token.clone())
@@ -137,9 +130,16 @@ def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torc
     return new_tokens, new_probs
 
 
-def model_forward(model, x, input_pos):
-    return model(x, input_pos)
+def model_forward(model, x, input_pos, cross_attention_mask: Optional[Union[torch.Tensor, Dict]]=None):
+    return model(x, input_pos, cross_attention_mask=cross_attention_mask)
 
+def cross_attention_mask_update(cross_attention_mask, num_tokens=1):
+    if cross_attention_mask is not None:
+        cross_attention_mask = {
+            'mask': cross_attention_mask['mask'][:,:,-1,:].repeat(1, 1, num_tokens, 1),
+            'out_mask': cross_attention_mask['out_mask'][:,:,-1,:].repeat(1, 1, num_tokens, 1)
+        }
+    return cross_attention_mask
 def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
     draft_probs = torch.stack(draft_probs)
@@ -221,6 +221,8 @@ def speculative_decode(
     speculate_k: int,
     do_block_verify: bool = False,
     draf_input_pos: Optional[int] = None,
+    cross_attention_mask: Optional[Union[torch.Tensor, Dict]]=None,
+    draft_cross_attention_mask: Optional[Union[torch.Tensor, Dict]]=None,
     **sampling_kwargs
 ) -> torch.Tensor:
     device = cur_token.device
@@ -236,6 +238,7 @@ def speculative_decode(
             cur_token.view(1, -1), 
             orig_input_pos.clone(), 
             speculate_k, 
+            cross_attention_mask=draft_cross_attention_mask,
             **sampling_kwargs
         )
 
@@ -248,7 +251,8 @@ def speculative_decode(
         target_logits = model_forward(
             model,
             torch.cat([cur_token.view(1), draft_tokens]).view(1, -1),
-            torch.arange(input_pos, input_pos + speculate_k + 1, device=device)
+            torch.arange(input_pos, input_pos + speculate_k + 1, device=device),
+            cross_attention_mask=cross_attention_mask
         )
     
     if not do_block_verify:
@@ -264,8 +268,99 @@ def speculative_decode(
             draft_model,
             draft_tokens[-1].view(1, -1),
             orig_input_pos + speculate_k,
+            cross_attention_mask=draft_cross_attention_mask
         )
     return verified_tokens
+
+def calculate_sequence_lengths(
+    prompt: torch.Tensor,
+    max_new_tokens: int,
+    embedded: Optional[torch.Tensor],
+    draft_encoded: Optional[torch.Tensor],
+    speculate_k: Optional[int],
+    is_speculative: bool,
+    interactive: bool,
+    model_block_size: int,
+    cross_attention_mask: Optional[Union[torch.Tensor, Dict]] = None,
+) -> dict:
+    """Calculate various sequence lengths needed for generation.
+    
+    Args:
+        prompt: Input token tensor
+        max_new_tokens: Maximum number of tokens to generate
+        embedded: Optional embedded tensor for multimodal models. Can be:
+            - None: Text-only model
+            - [B, L, E] tensor: Direct token embeddings
+            - [P, L, E] tensor: Cross-attention states where P is patch size
+        draft_encoded: Optional encoded tensor for text-only draft models
+        speculate_k: Number of tokens to speculate (if using speculative decoding)
+        is_speculative: Whether using speculative decoding
+        interactive: Whether in interactive mode
+        model_block_size: Maximum sequence length supported by model
+        cross_attention_mask: Optional cross attention mask to determine if using cross attention
+    
+    Returns:
+        Dictionary containing calculated lengths:
+        - input_text_length: Length of input text tokens
+        - input_embed_length: Length of input embeddings (same as text length for cross-attention case)
+        - text_seq_length: Total text sequence length
+        - embed_seq_length: Total embedding sequence length
+        - draft_text_seq_length: Sequence length for draft model
+        - is_cross_attention: Whether using cross attention states
+    """
+    input_text_length = prompt.size(-1)
+    
+    # Determine if we're using cross attention states or direct embeddings
+    is_cross_attention = cross_attention_mask is not None and embedded is not None
+    multimodal = embedded is not None
+    
+    # For cross attention case, input_embed_length is same as text length
+    # For direct embedding case, use embedding length
+    if multimodal and not is_cross_attention:
+        input_embed_length = embedded.size(1)  # Use L from [B, L, E]
+    else:
+        input_embed_length = input_text_length  # Same as text length for text-only or cross-attention
+    
+    # Calculate base sequence lengths
+    text_seq_length = input_text_length + max_new_tokens
+    
+    # For cross attention case, embed_seq_length follows text length
+    # For direct embedding case, use embedding length + new tokens
+    if multimodal and not is_cross_attention:
+        embed_seq_length = input_embed_length + max_new_tokens
+    else:
+        embed_seq_length = text_seq_length
+    
+    # Adjust for interactive mode or model limits
+    if interactive:
+        embed_seq_length = 350
+    else:
+        embed_seq_length = min(embed_seq_length, model_block_size)
+    
+    # Add extra space for speculative decoding if needed
+    if is_speculative:
+        embed_seq_length += speculate_k + 1
+        text_seq_length += speculate_k + 1
+        
+    # Calculate draft model sequence length if needed
+    draft_text_seq_length = (
+        draft_encoded.size(-1) + speculate_k + 1 + max_new_tokens 
+        if draft_encoded is not None 
+        else text_seq_length
+    )
+    
+    # Verify text-only models have matching lengths
+    if not multimodal:
+        assert text_seq_length == embed_seq_length, "Text-only model should have the same embed_seq_length as text_seq_length"
+        
+    return {
+        "input_text_length": input_text_length,
+        "input_embed_length": input_embed_length,
+        "text_seq_length": text_seq_length,
+        "embed_seq_length": embed_seq_length,
+        "draft_text_seq_length": draft_text_seq_length,
+        "is_cross_attention": is_cross_attention
+    }
 
 @torch.no_grad()
 def generate(
@@ -282,95 +377,101 @@ def generate(
     embedded: Optional[torch.Tensor] = None,
     draft_encoded: Optional[torch.Tensor] = None,
     draft_embedded: Optional[torch.Tensor] = None,
+    cross_attention_mask: Optional[Union[torch.Tensor, Dict]]=None,
+    draft_cross_attention_mask: Optional[Union[torch.Tensor, Dict]]=None,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
     Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
     """
     is_speculative = draft_model is not None
-    multimodal = True if embedded is not None else False
-    draft_multimodal = True if draft_embedded is not None else False
+    multimodal = embedded is not None
+    draft_multimodal = draft_embedded is not None
     if draft_multimodal and draft_encoded is not None:
         raise ValueError("Draft model is multimodal, but `draft_encoded` is also provided! \
                           `draft_encoded` is only used for multimodal target and text-only draft models.")
-    # create an empty tensor of the expected final shape and fill in the current tokens
-    input_text_length = prompt.size(-1)
-    input_embed_length = embedded.size(1) if embedded is not None else input_text_length
-    text_seq_length = input_text_length + max_new_tokens # Full text sequence length
-    embed_seq_length = input_embed_length + max_new_tokens if multimodal else text_seq_length # Full embedding sequence length
-    if interactive:
-        embed_seq_length = 350
-    else:
-        embed_seq_length = min(embed_seq_length, model.config.block_size)
 
+    # Calculate sequence lengths
+    lengths = calculate_sequence_lengths(
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        embedded=embedded,
+        draft_encoded=draft_encoded,
+        speculate_k=speculate_k,
+        is_speculative=is_speculative,
+        interactive=interactive,
+        model_block_size=model.config.block_size,
+        cross_attention_mask=cross_attention_mask
+    )
+    
     device, dtype = prompt.device, prompt.dtype
-    embed_seq_length = embed_seq_length + speculate_k + 1 if is_speculative else embed_seq_length
-    text_seq_length = text_seq_length + speculate_k + 1 if is_speculative else text_seq_length
-    draft_text_seq_length = draft_encoded.size(-1) + speculate_k + 1 + max_new_tokens if draft_encoded is not None else text_seq_length
-    if not multimodal:
-        assert text_seq_length == embed_seq_length, "Text-only model should have the same embed_seq_length as text_seq_length"
+    
+    # Setup model caches
     with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
+        model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["embed_seq_length"])
         if is_speculative and draft_model is not model:
             if draft_embedded is not None:
-                # Draft is multimodal
-                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
+                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["embed_seq_length"])
             else:
-                # Draft is text only
-                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_text_seq_length)
+                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["draft_text_seq_length"])
 
-    # create an empty tensor of the expected final shape and fill in the current tokens
-    seq = torch.empty(batch_size, text_seq_length, dtype=dtype, device=device)
-    # We are just making the same prompt for every batch
+    # Initialize sequence tensor
+    seq = torch.empty(batch_size, lengths["text_seq_length"], dtype=dtype, device=device)
     prompt = prompt.view(1, -1).repeat(batch_size, 1)
-    seq[:, :input_text_length] = prompt
-    input_pos = torch.arange(0, input_embed_length, device=device)
+    seq[:, :lengths["input_text_length"]] = prompt
+    
+    input_pos = torch.arange(0, lengths["input_embed_length"], device=device)
     draft_input_pos = torch.arange(0, draft_encoded.size(-1), device=device) if draft_encoded is not None else input_pos
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
         if multimodal:
-            next_token = prefill(model, embedded, input_pos, embedded=True, **sampling_kwargs).clone()
+            next_token = prefill(model, prompt.view(batch_size, -1), input_pos, embedded, cross_attention_mask=cross_attention_mask, **sampling_kwargs).clone()
         else:
             next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
         if is_speculative:
             if draft_multimodal:
-                prefill(draft_model, draft_embedded, input_pos, embedded=True, **sampling_kwargs)
+                prefill(draft_model, prompt.view(batch_size, -1), input_pos, embedded, cross_attention_mask=draft_cross_attention_mask, **sampling_kwargs)
             elif multimodal:
                 # Target multimodal, draft text only
-                prefill(draft_model, draft_encoded.view(batch_size, -1) , draft_input_pos, **sampling_kwargs)
+                prefill(draft_model, draft_encoded.view(batch_size, -1), draft_input_pos, **sampling_kwargs)
             else:
                 prefill(draft_model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs)
-    seq[:, input_text_length] = next_token.squeeze()
+    seq[:, lengths["input_text_length"]] = next_token.squeeze()
+    # Update cross attention mask for decoding stage
+    cross_attention_mask = cross_attention_mask_update(cross_attention_mask, speculate_k + 1 if is_speculative else 1)
+    draft_cross_attention_mask = cross_attention_mask_update(draft_cross_attention_mask, 1)
 
-    input_pos = torch.tensor([input_embed_length], device=device, dtype=torch.int)
+    input_pos = torch.tensor([lengths["input_embed_length"]], device=device, dtype=torch.int)
     
     accept_counts = [0] * (speculate_k + 1)
 
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
         draft_input_pos = draft_encoded.size(-1) if draft_encoded is not None else input_pos
-        max_pos = embed_seq_length - 1 - (speculate_k + 1)
+        max_pos = lengths["embed_seq_length"] - 1 - (speculate_k + 1)
         while input_pos < max_pos:
             cur_token = next_token.view(())
 
             next_tokens = speculative_decode(
-                model, draft_model, cur_token, input_pos, speculate_k, do_block_verify, draft_input_pos, **sampling_kwargs
+                model, draft_model, cur_token, input_pos, speculate_k, do_block_verify, 
+                draft_input_pos, cross_attention_mask=cross_attention_mask,
+                draft_cross_attention_mask=draft_cross_attention_mask, **sampling_kwargs
             )
 
             accept_counts[len(next_tokens) - 1] += 1
-            num_added = min(embed_seq_length - input_pos - 1, len(next_tokens))
+            num_added = min(lengths["embed_seq_length"] - input_pos - 1, len(next_tokens))
             if not multimodal:
                 seq[:,input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
             else:
-                text_input_pos = input_pos - (input_embed_length - input_text_length) + 1
+                text_input_pos = input_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
                 seq[:, text_input_pos : text_input_pos + num_added] = next_tokens[: num_added]
             # for i in next_tokens[: num_added,]:
             #     callback(i)
             input_pos = input_pos + num_added
             draft_input_pos = draft_input_pos + num_added
             next_token = next_tokens[-1]
-        text_input_pos = input_pos - (input_embed_length - input_text_length) + 1
+        text_input_pos = input_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
         seq = seq[:, :text_input_pos]
     else:
         new_tokens, new_probs = [], []
@@ -381,20 +482,23 @@ def generate(
                 profiler.set_tokens_processed(1)
                 with sdpa_kernel([SDPBackend.MATH, SDPBackend.FLASH_ATTENTION]):
                     next_token, next_prob = decode_one_token(
-                        model, cur_token, input_pos, **sampling_kwargs
+                        model, cur_token, input_pos, 
+                        cross_attention_mask=cross_attention_mask,
+                        **sampling_kwargs
                     )
                     input_pos += 1
                     new_tokens.append(next_token.clone())
                     # callback(new_tokens[-1])
                     new_probs.append(next_prob.clone())
                     cur_token = next_token.clone()
-        end = len(new_tokens) + input_text_length +1
-        seq[:, input_text_length + 1:end] = torch.cat(new_tokens, dim=-1)
+        end = len(new_tokens) + lengths["input_text_length"] +1
+        seq[:, lengths["input_text_length"] + 1:end] = torch.cat(new_tokens, dim=-1)
 
     generate_stats = {
         'accept_counts': accept_counts
     }
     return seq, generate_stats
+
 
 def encode_tokens(tokenizer, string, bos=True, device=default_device):
     tokens = tokenizer.encode(string)
@@ -516,9 +620,9 @@ def main(
     if multimodal:
         torch.set_default_dtype(precision)
         torch.set_default_device(device)
-        vision_checkpoints = str(checkpoint_path.parent / "vision_modules.pth")
+        vision_checkpoints = checkpoint_path.parent / "vision_modules.pth"
         vision_modules = VisionModule.from_name(checkpoint_path.parent.name, 
-                                                config=model.config.mm_config, 
+                                                config=model.config.mm_config,
                                                 checkpoint_path=vision_checkpoints,
                                                 dtype=precision)
         vision_modules.eval_mode()
@@ -562,10 +666,9 @@ def main(
     results = []
     speeds = []
     
-    model_template = get_model_template(checkpoint_path.parent.name)
+    conv = get_conversation_template(checkpoint_path)
     
     system_message = ("You are a helpful, respectful and honest assistant. Always answer as helpfully as possible. ")
-    conv = get_conversation_template(model_template)
     
     # Warmup calls
     # TODO: For multimodal models, we need to warmup the vision modules as well, if we compile them
@@ -598,7 +701,6 @@ def main(
     if num_questions is not None:
         questions = questions[:num_questions]
     for question in tqdm(questions):
-        torch.manual_seed(0)
         conv.messages = []
         conv.set_system_message(system_message)
         
@@ -614,9 +716,7 @@ def main(
             
             if not multimodal:
                 encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
-                embedded = None
-                draft_encoded = None
-                draft_embedded = None
+                embedded, draft_encoded, draft_embedded, cross_attention_mask, draft_cross_attention_mask = None, None, None, None, None
             else:
                 with TimeProfiler("Embedding"):
                     with torch.inference_mode():
@@ -624,19 +724,20 @@ def main(
                             prompt=prompt, tokenizer=tokenizer, images=question["images"],
                             embed_tokens=model.tok_embeddings, 
                         )
+                        cross_attention_mask = getattr(vision_modules, "cross_attention_mask", None)
                         if is_speculative and draft_multimodal:
                             _, draft_embedded = draft_vision_modules(
                                 prompt=prompt, tokenizer=tokenizer, images=question["images"],
                                 embed_tokens=draft_model.tok_embeddings, 
                             )
                             draft_encoded = None
+                            draft_cross_attention_mask = getattr(draft_vision_modules, "cross_attention_mask", None)
                         elif is_speculative and not draft_multimodal:
                             # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
                             draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
-                            draft_embedded = None
+                            draft_embedded, draft_cross_attention_mask = None, None
                         else:
-                            draft_encoded = None
-                            draft_embedded = None
+                            draft_encoded, draft_embedded, draft_cross_attention_mask = None, None, None
                         encoded = encoded.squeeze(0)
             
             start_time = time.time()
@@ -655,7 +756,9 @@ def main(
                     do_block_verify=do_block_verify,
                     embedded=embedded,
                     draft_encoded=draft_encoded,
-                    draft_embedded=draft_embedded
+                    draft_embedded=draft_embedded,
+                    cross_attention_mask=cross_attention_mask,
+                    draft_cross_attention_mask=draft_cross_attention_mask
                 )
             end_time = time.time()
             
@@ -737,8 +840,9 @@ if __name__ == '__main__':
     parser.add_argument('--num_questions', type=int, default=None, help='Number of questions to evaluate')
     parser.add_argument('--warmup', type=int, default=5, help='Number of warmup steps')
     parser.add_argument('--do_block_verify', action='store_true', help='Whether to verify with block acceptance probability')
-    
+    parser.add_argument('--seed', type=int, default=1234, help='Random seed')
     args = parser.parse_args()
+    torch.manual_seed(args.seed)
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
          args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
          args.warmup, args.do_block_verify)
