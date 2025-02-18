@@ -5,6 +5,12 @@ import torch.nn as nn
 from PIL import Image
 from dataclasses import dataclass
 from pathlib import Path
+from dataclasses import asdict
+
+from multimodal.mm_config import QwenVisionModelArgs 
+
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
+from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLVisionConfig
 
 from multimodal.llava.preprocessing import process_images, tokenizer_image_token, prepare_inputs_labels_for_multimodal, IMAGE_TOKEN_INDEX
 from multimodal.qwen2_5vl.preprocessing import process_prompt_for_qwen2_5vl, get_processor, prepare_input_embeds
@@ -167,10 +173,11 @@ class Qwen2_5VisionModule(VisionModule):
         device: Optional[Union[str, torch.device]] = None
     ):
         super().__init__(config, dtype, device)
-        from multimodal.qwen2_5vl.builder import get_qwen_vision_model
         name = Path(checkpoint_path).parent.name
         self._processor_id = Path(*Path(checkpoint_path).parent.parts[-2:])
-        self.vision_model = get_qwen_vision_model(name, checkpoint_path, self._device, self.dtype)
+        config_dc = QwenVisionModelArgs.from_name(name)
+        vision_config = Qwen2_5_VLVisionConfig(**asdict(config_dc))
+        self.vision_model = Qwen2_5_VisionTransformerPretrainedModel._from_config(vision_config)
         if checkpoint_path is not None:
              self.vision_model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
         self.vision_model = self.vision_model.to(device=self._device, dtype=self.dtype)
