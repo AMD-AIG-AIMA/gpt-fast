@@ -16,8 +16,14 @@ class HFConversationTemplate:
         self.messages = []
         self.roles = ["user", "assistant"]
         self.system_message = None
-        self.stop_token_ids = [processor.tokenizer.eos_token_id]
-        self.stop_str = processor.tokenizer.eos_token
+        try:
+            eos_token_id = processor.eos_token_id
+            eos_token = processor.eos_token
+        except:
+            eos_token_id = processor.tokenizer.eos_token_id
+            eos_token = processor.tokenizer.eos_token
+        self.stop_token_ids = [eos_token_id]
+        self.stop_str = eos_token
 
     def set_system_message(self, message):
         self.system_message = message
@@ -34,7 +40,7 @@ class HFConversationTemplate:
                 "content": self.system_message
             })
         all_messages.extend(self.messages)
-        return self.processor.apply_chat_template(all_messages, add_generation_prompt=True)
+        return self.processor.apply_chat_template(all_messages, add_generation_prompt=True, tokenize=False)
 
 def get_model_template(model_name):
     for key, template in MODEL_TO_TEMPLATE.items():

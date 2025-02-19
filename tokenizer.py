@@ -83,7 +83,7 @@ class TiktokenWrapper(TokenizerInterface):
         self._eos_id: int = self.special_tokens["<|end_of_text|>"]
 
     def encode(self, text):
-        return self.model.encode(text)
+        return self.model.encode(text, allowed_special=set(self.special_tokens.keys()))
 
     def decode(self, tokens):
         return self.model.decode(tokens)
