@@ -624,7 +624,8 @@ def main(
         vision_modules = VisionModule.from_name(checkpoint_path.parent.name, 
                                                 config=model.config.mm_config,
                                                 checkpoint_path=vision_checkpoints,
-                                                dtype=precision)
+                                                dtype=precision,
+                                                device=device)
         vision_modules.eval_mode()
     else:
         vision_modules = None
@@ -638,7 +639,8 @@ def main(
             draft_vision_modules = VisionModule.from_name(draft_checkpoint_path.parent.name, 
                                                         config=draft_model.config.mm_config, 
                                                         checkpoint_path=draft_vision_checkpoints,
-                                                        dtype=precision)
+                                                        dtype=precision,
+                                                        device=device)
             draft_vision_modules.eval_mode()
         else:
             draft_vision_modules = None
