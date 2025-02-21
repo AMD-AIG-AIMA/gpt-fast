@@ -192,30 +192,35 @@ class LlamaVisionModule(VisionModule):
         ):
         # Replace <image>, <image1>, <image2>, ... with <|image|>
         prompt = re.sub(r'<image\s*\d*>', '<|image|>', prompt)
-        inputs = self.processor(
-            images=images,
-            text=prompt,
-            return_tensors="pt"
-        ).to(self._device)
-        vision_outputs = self.vision_model(
-                pixel_values=inputs.pixel_values,
-                aspect_ratio_ids=inputs.aspect_ratio_ids,
-                aspect_ratio_mask=inputs.aspect_ratio_mask,
-                output_hidden_states=False,
-                output_attentions=False,
-                return_dict=True,
-        )
-        cross_attention_states = vision_outputs[0]
-        cross_attention_states = self.multi_modal_projector(cross_attention_states).reshape(
-            -1, cross_attention_states.shape[-2], self.config.text_hidden_size
-        )
+        if len(images) == 0:
+            inputs = self.processor(text=prompt, return_tensors="pt").to(self._device)
+            cross_attention_states = None
+            self.cross_attention_mask = {}
+        else:
+            inputs = self.processor(
+                images=images,
+                text=prompt,
+                return_tensors="pt"
+            ).to(self._device)
+            vision_outputs = self.vision_model(
+                    pixel_values=inputs.pixel_values,
+                    aspect_ratio_ids=inputs.aspect_ratio_ids,
+                    aspect_ratio_mask=inputs.aspect_ratio_mask,
+                    output_hidden_states=False,
+                    output_attentions=False,
+                    return_dict=True,
+            )
+            cross_attention_states = vision_outputs[0]
+            cross_attention_states = self.multi_modal_projector(cross_attention_states).reshape(
+                -1, cross_attention_states.shape[-2], self.config.text_hidden_size
+            )
 
-        cross_attention_mask, out_mask = self._prepare_cross_attention_mask(
-            inputs.cross_attention_mask,
-            num_vision_tokens=self.vision_model.num_patches,
-            dtype=self.dtype,
-        )
-        self.cross_attention_mask = {'mask': cross_attention_mask, 'out_mask': out_mask}
+            cross_attention_mask, out_mask = self._prepare_cross_attention_mask(
+                inputs.cross_attention_mask,
+                num_vision_tokens=self.vision_model.num_patches,
+                dtype=self.dtype,
+            )
+            self.cross_attention_mask = {'cross_attention_mask': cross_attention_mask, 'cross_attention_mask_out': out_mask}
         return inputs.input_ids, cross_attention_states
 
     def _prepare_cross_attention_mask(

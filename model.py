@@ -117,12 +117,10 @@ class KVCache(nn.Module):
         cache_shape = (max_batch_size, n_heads, max_seq_length, head_dim)
         self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype))
         self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype))
-        self.token_seen = 0
 
     def update(self, input_pos, k_val, v_val):
         # input_pos: [S], k_val: [B, H, S, D]
         assert input_pos.shape[0] == k_val.shape[2]
-        self.token_seen += input_pos.shape[0]
         k_out = self.k_cache
         v_out = self.v_cache
         k_out[:, :, input_pos] = k_val
@@ -176,7 +174,8 @@ class Transformer(nn.Module):
         self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
 
     def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None, cross_states: Optional[Tensor] = None, 
-                embedded: bool = False, cross_attention_mask: Optional[Union[Tensor, Dict]] = None) -> Tensor:
+                embedded: bool = False, cross_attention_mask: Optional[Tensor] = None, 
+                cross_attention_mask_out: Optional[Tensor] = None) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         causal_mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
@@ -192,7 +191,8 @@ class Transformer(nn.Module):
             x = layer(x, input_pos=input_pos, freqs_cis=freqs_cis, 
                      cross_states=cross_states, 
                      mask=causal_mask,
-                     cross_attention_mask=cross_attention_mask)
+                     cross_attention_mask=cross_attention_mask,
+                     cross_attention_mask_out=cross_attention_mask_out)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -211,7 +211,7 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
 
     def forward(self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor, cross_states: Optional[Tensor] = None, 
-    cross_attention_mask: Optional[Union[Tensor, Dict]] = None) -> Tensor:
+    cross_attention_mask: Optional[Tensor] = None, cross_attention_mask_out: Optional[Tensor] = None) -> Tensor:
         # Regular transformer block only uses causal mask
         h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
         out = h + self.feed_forward(self.ffn_norm(h))
@@ -358,13 +358,13 @@ class CrossAttentionBlock(nn.Module):
         self.cross_attn_mlp_gate = torch.nn.Parameter(torch.zeros(1))
 
     def forward(self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor, cross_states: Optional[Tensor] = None, 
-                cross_attention_mask: Optional[Union[Tensor, Dict]] = None) -> Tensor:
-        if cross_states is None and self.cross_attention.kv_cache.token_seen == 0:
+                cross_attention_mask: Optional[Tensor] = None, cross_attention_mask_out: Optional[Tensor] = None) -> Tensor:
+        if cross_states is None and cross_attention_mask is None:
             # Layer is not used, language model only
             return x
         # Cross attention block uses cross_attention_mask
-        h = x + self.cross_attention(self.attention_norm(x), cross_states, cross_attention_mask['mask'], input_pos) * self.cross_attn_attn_gate.tanh()
-        out = h + self.feed_forward(self.ffn_norm(h)) * self.cross_attn_mlp_gate.tanh() * cross_attention_mask['out_mask'][:,0]
+        h = x + self.cross_attention(self.attention_norm(x), cross_states, cross_attention_mask, input_pos) * self.cross_attn_attn_gate.tanh()
+        out = h + self.feed_forward(self.ffn_norm(h)) * self.cross_attn_mlp_gate.tanh() * cross_attention_mask_out[:,0]
         return out
 
 class CrossAttention(nn.Module):
