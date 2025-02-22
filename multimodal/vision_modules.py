@@ -195,7 +195,7 @@ class LlamaVisionModule(VisionModule):
         if len(images) == 0:
             inputs = self.processor(text=prompt, return_tensors="pt").to(self._device)
             cross_attention_states = None
-            self.cross_attention_mask = {}
+            self.cross_attention_masks = {}
         else:
             inputs = self.processor(
                 images=images,
@@ -220,7 +220,7 @@ class LlamaVisionModule(VisionModule):
                 num_vision_tokens=self.vision_model.num_patches,
                 dtype=self.dtype,
             )
-            self.cross_attention_mask = {'cross_attention_mask': cross_attention_mask, 'cross_attention_mask_out': out_mask}
+            self.cross_attention_masks = {'cross_attention_mask': cross_attention_mask, 'cross_attention_mask_out': out_mask}
         return inputs.input_ids, cross_attention_states
 
     def _prepare_cross_attention_mask(

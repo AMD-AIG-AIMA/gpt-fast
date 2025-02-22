@@ -150,6 +150,8 @@ class Transformer(nn.Module):
         self.mask_cache: Optional[Tensor] = None
         self.max_batch_size = -1
         self.max_seq_length = -1
+        self.cross_attention_mask = None
+        self.cross_attention_mask_out = None
 
     def setup_caches(self, max_batch_size, max_seq_length):
         if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
@@ -174,8 +176,7 @@ class Transformer(nn.Module):
         self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
 
     def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None, cross_states: Optional[Tensor] = None, 
-                embedded: bool = False, cross_attention_mask: Optional[Tensor] = None, 
-                cross_attention_mask_out: Optional[Tensor] = None) -> Tensor:
+                embedded: bool = False) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         causal_mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
@@ -191,8 +192,8 @@ class Transformer(nn.Module):
             x = layer(x, input_pos=input_pos, freqs_cis=freqs_cis, 
                      cross_states=cross_states, 
                      mask=causal_mask,
-                     cross_attention_mask=cross_attention_mask,
-                     cross_attention_mask_out=cross_attention_mask_out)
+                     cross_attention_mask=self.cross_attention_mask,
+                     cross_attention_mask_out=self.cross_attention_mask_out)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -362,6 +363,8 @@ class CrossAttentionBlock(nn.Module):
         if cross_states is None and cross_attention_mask is None:
             # Layer is not used, language model only
             return x
+        cross_attention_mask=cross_attention_mask[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
+        cross_attention_mask_out=cross_attention_mask_out[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
         # Cross attention block uses cross_attention_mask
         h = x + self.cross_attention(self.attention_norm(x), cross_states, cross_attention_mask, input_pos) * self.cross_attn_attn_gate.tanh()
         out = h + self.feed_forward(self.ffn_norm(h)) * self.cross_attn_mlp_gate.tanh() * cross_attention_mask_out[:,0]
