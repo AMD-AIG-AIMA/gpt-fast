@@ -14,7 +14,7 @@ from torch.nn import functional as F
 
 
 from multimodal.mm_config import MultimodalModelArgs, QwenVisionModelArgs
-
+from multimodal.qwen2_5vl.preprocessing import get_rope_index
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
@@ -154,9 +154,13 @@ class Transformer(nn.Module):
         self.max_batch_size = -1
         self.max_seq_length = -1
 
-    def setup_caches(self, max_batch_size, max_seq_length, mrope = False, position_ids=None):
+    def setup_caches(self, max_batch_size, max_seq_length, mrope, prompt, image_grid_thw):
         if not mrope and self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
             return
+        if mrope:
+            position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw= image_grid_thw, mm_config=self.config.mm_config)
+        else:
+            position_ids = None
         head_dim = self.config.dim // self.config.n_head
         max_seq_length = find_multiple(max_seq_length, 8)
         self.max_seq_length = max_seq_length

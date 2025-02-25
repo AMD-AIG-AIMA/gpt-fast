@@ -1,6 +1,8 @@
 from transformers import AutoProcessor
 import torch
 import re
+
+#TODO: remove redundant functions
 def qwen2_5vl_process_vision_info():
     pass
 IMAGE_TOKEN_PATTERN = '<|vision_start|><|image_pad|><|vision_end|>'

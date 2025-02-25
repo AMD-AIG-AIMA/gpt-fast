@@ -1,20 +1,9 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
 import os
 from typing import List, Optional
 
 import torch
 import torch.distributed as dist
 from torch import nn
-# if os.uname().sysname != "Darwin":
-#     from torch.distributed import _functional_collectives as funcol
-# else:
-#     # Distributed is not supported on MacOS
-#     funcol = None
-
 from model import Attention, FeedForward, Transformer
 from quantize import WeightOnlyInt4Linear
 
@@ -22,7 +11,10 @@ from quantize import WeightOnlyInt4Linear
 def _get_rank() -> int:
     return int(os.environ.get("LOCAL_RANK", "0"))
 
-def is_local():
+def _get_world_size() -> int:
+    return int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+
+def is_local() -> bool:
     return _get_rank() == 0
 
 def local_break():
@@ -30,178 +22,121 @@ def local_break():
         breakpoint()
     dist.barrier()
 
-def _get_world_size() -> int:
-    return int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
-
-def maybe_init_dist() -> Optional[int]:
+def init_dist() -> Optional[int]:
+    """Initializes the distributed process group if applicable."""
     try:
-        # provided by torchrun
         rank = _get_rank()
         world_size = _get_world_size()
-
+        
         if world_size < 2:
-            # too few gpus to parallelize, tp is no-op
-            return None
+            return None  # No parallelization needed
+
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+            torch.cuda.set_device(rank)
+        return rank
     except KeyError:
-        # not run via torchrun, no-op
-        return None
+        return None  # Not run via torchrun, no-op
 
-    torch.cuda.set_device(rank)
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
-    return rank
+def shard_tensor(tensor: torch.Tensor, dim: int, world_size: int, rank: int) -> torch.Tensor:
+    assert tensor.size(dim=dim) % world_size == 0, f"Cannot evenly shard tensor along dim {dim}"
+    return tensor.chunk(world_size, dim=dim)[rank]
 
+def shard_qkv(qkv: torch.Tensor, dim: int, weight_splits: List[int], world_size: int, rank: int) -> torch.Tensor:
+    q, k, v = qkv.split(weight_splits, dim=dim)
+    return torch.cat([shard_tensor(t, dim, world_size, rank) for t in (q, k, v)], dim=dim)
 
-def _apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = []) -> None:
+def apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = []) -> None:
     rank = _get_rank()
     world_size = _get_world_size()
-
-    # Linear's weight matrix is transposed, and is of shape
-    # (linear.out_features, linear.in_features)
-    dim_lookup = {
-        "colwise": (0, "out_features"),
-        "rowwise": (1, "in_features")
-    }
-    assert style in dim_lookup
-    shard_dim, size_attr = dim_lookup[style]
-
-    # Ensure we can shard evenly
+    
+    assert style in {"colwise", "rowwise"}, "Invalid style for tensor parallelism"
+    shard_dim, size_attr = (0, "out_features") if style == "colwise" else (1, "in_features")
+    
     if getattr(linear, size_attr) % world_size != 0:
         raise ValueError(f"Cannot evenly shard {size_attr} ({getattr(linear, size_attr)}) across {world_size} GPUs")
     
-    def shard(x, dim):
-        assert x.size(dim=dim) % world_size == 0
-        return torch.tensor_split(x, world_size, dim=dim)[rank]
-
-    def shard_qkv(qkv, dim, weight_splits):
-        q, k, v = qkv.split(weight_splits, dim=dim)
-        q = shard(q, dim)
-        k = shard(k, dim)
-        v = shard(v, dim)
-        return torch.cat((q,k,v), dim=dim)
-
+    # Shard bias if applicable
+    if linear.bias is not None and style == "colwise":
+        linear.bias = nn.Parameter(
+            shard_qkv(linear.bias, 0, weight_splits, world_size, rank) if weight_splits else shard_tensor(linear.bias, 0, world_size, rank),
+            requires_grad=False,
+        )
     
-    # Handle bias if it exists
-    if linear.bias is not None:
-        if style == "colwise":
-            if weight_splits:
-                # For QKV attention with bias
-                sharded_bias = shard_qkv(linear.bias, 0, weight_splits)
-            else:
-                sharded_bias = shard(linear.bias, 0)
-            linear.bias = nn.Parameter(sharded_bias, requires_grad=False)
-        elif style == "rowwise":
-            # For rowwise sharding, bias is not split
-            pass
-        
-    # shard
-    if weight_splits:
-        # attention
-        assert len(weight_splits) == 3
-
-        if isinstance(linear, WeightOnlyInt4Linear):
-            sharded_weight = shard_qkv(linear.weight, shard_dim, [i//8 for i in weight_splits])
-            linear.scales_and_zeros = shard_qkv(linear.scales_and_zeros, 1 - shard_dim, weight_splits)
-        else:
-            sharded_weight = shard_qkv(linear.weight, shard_dim, weight_splits)
-        if hasattr(linear, "scales") and style == "colwise":
-            linear.scales = shard_qkv(linear.scales, 0, weight_splits)
+    # Shard weights
+    if isinstance(linear, WeightOnlyInt4Linear):
+        linear.weight = nn.Parameter(shard_qkv(linear.weight, shard_dim, [s // 8 for s in weight_splits], world_size, rank), requires_grad=False)
+        linear.scales_and_zeros = shard_qkv(linear.scales_and_zeros, 1 - shard_dim, weight_splits, world_size, rank)
     else:
-        sharded_weight = shard(linear.weight, shard_dim)
-        if isinstance(linear, WeightOnlyInt4Linear):
-            linear.scales_and_zeros = shard(linear.scales_and_zeros, 1 - shard_dim)
-            if style == "rowwise":
-                assert linear.scales_and_zeros.shape[0] * 32 == sharded_weight.shape[1] * sharded_weight.shape[2] * sharded_weight.shape[3]
-                assert linear.scales_and_zeros.shape[1] == sharded_weight.shape[0] * 8
-        if hasattr(linear, "scales") and style == "colwise":
-            linear.scales = shard(linear.scales, 0)
-
-    # local_break()
-    linear.weight = nn.Parameter(sharded_weight, requires_grad=False)
+        linear.weight = nn.Parameter(shard_qkv(linear.weight, shard_dim, weight_splits, world_size, rank) if weight_splits else shard_tensor(linear.weight, shard_dim, world_size, rank), requires_grad=False)
+    
+    if hasattr(linear, "scales") and style == "colwise":
+        linear.scales = shard_qkv(linear.scales, 0, weight_splits, world_size, rank)
+    
     setattr(linear, size_attr, getattr(linear, size_attr) // world_size)
 
-    # shape info should still be synced
-    # assert linear.weight.shape == (linear.out_features, linear.in_features)
-def reduce_hook_function(module, input, output):
+def reduce_hook(module, input, output):
     dist.all_reduce(output[0], op=dist.ReduceOp.SUM)
 
-def _apply_tp_ffn(mlp: FeedForward) -> None:
-    assert hasattr(mlp, "w1")
-    assert hasattr(mlp, "w3")
-    assert hasattr(mlp, "w2")
-
-    _apply_tp_linear(mlp.w1, "colwise")
-    _apply_tp_linear(mlp.w3, "colwise")
-    _apply_tp_linear(mlp.w2, "rowwise")
-
+def register_tp_hooks(module):
     world_size = _get_world_size()
-    # mlp.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-    #     output, "sum", list(range(world_size))))
-    # # Create a process group without name
     if not dist.is_initialized():
         dist.init_process_group(backend="nccl")
-    
-    # Store the process group as a module attribute to prevent recreation
-    if not hasattr(mlp, 'process_group'):
-        ranks = list(range(world_size))
-        mlp.process_group = dist.new_group(ranks=ranks)
-    
-    mlp.register_forward_hook(reduce_hook_function)
+    if not hasattr(module, 'process_group'):
+        module.process_group = dist.new_group(ranks=list(range(world_size)))
+    module.register_forward_hook(reduce_hook)
 
+def apply_tp_ffn(mlp: FeedForward) -> None:
+    for layer, style in zip([mlp.w1, mlp.w3, mlp.w2], ["colwise", "colwise", "rowwise"]):
+        apply_tp_linear(layer, style)
+    register_tp_hooks(mlp)
 
-def _apply_tp_attn(attn: Attention) -> None:
+def apply_tp_attn(attn: Attention) -> None:
     world_size = _get_world_size()
-
-    # Check if dimensions are divisible by world_size
-    if attn.n_head % world_size != 0 or attn.dim % world_size != 0 or attn.n_local_heads % world_size != 0:
-        raise ValueError(f"Attention dimensions ({attn.n_head},{attn.dim}, {attn.n_local_heads}) are not divisible by {world_size} GPUs")
-
-    assert hasattr(attn, "wqkv")
-    assert hasattr(attn, "wo")
-
-    kv_size = attn.n_local_heads * attn.head_dim
-    _apply_tp_linear(attn.wqkv, "colwise", [attn.dim, kv_size, kv_size])
-    _apply_tp_linear(attn.wo, "rowwise")
-
-    # overwrite
-    attn.n_head = attn.n_head // world_size
-    attn.dim = attn.dim // world_size
+    
+    if any(dim % world_size != 0 for dim in [attn.n_head, attn.dim, attn.n_local_heads]):
+        raise ValueError(f"Attention dimensions ({attn.n_head}, {attn.dim}, {attn.n_local_heads}) are not divisible by {world_size} GPUs")
+    
+    apply_tp_linear(attn.wqkv, "colwise", [attn.dim, attn.n_local_heads * attn.head_dim, attn.n_local_heads * attn.head_dim])
+    apply_tp_linear(attn.wo, "rowwise")
+    
+    attn.n_head //= world_size
+    attn.dim //= world_size
     attn.head_dim = attn.dim // attn.n_head
-    attn.n_local_heads = attn.n_local_heads // world_size
-
-    # attn.register_forward_hook(lambda _module, _input, output: funcol.all_reduce(
-    #     output[0], "sum", list(range(world_size))))
-    # # Create a process group without name
-    if not dist.is_initialized():
-        dist.init_process_group(backend="nccl")
+    attn.n_local_heads //= world_size
     
-    # Store the process group as a module attribute to prevent recreation
-    if not hasattr(attn, 'process_group'):
-        ranks = list(range(world_size))
-        attn.process_group = dist.new_group(ranks=ranks)
-        
-    attn.register_forward_hook(reduce_hook_function)
+    register_tp_hooks(attn)
 
-
-def _apply_tp_Transformer(Transformer: Transformer) -> None:
-    # overwrite config before Transformer.setup_cache is called
+def apply_tp_transformer(transformer: Transformer) -> None:
     world_size = _get_world_size()
-    # Check if dimensions are divisible by world_size
-    if (Transformer.config.n_head % world_size != 0 or
-        Transformer.config.dim % world_size != 0 or
-        Transformer.config.n_local_heads % world_size != 0):
-        raise ValueError(f"Transformer dimensions (n_head: {Transformer.config.n_head}, dim: {Transformer.config.dim}, n_local_heads: {Transformer.config.n_local_heads}) not divisible by {world_size} GPUs")
-    Transformer.config.n_head = Transformer.config.n_head // world_size
-    Transformer.config.dim = Transformer.config.dim // world_size
-    Transformer.config.n_local_heads = Transformer.config.n_local_heads // world_size
-
+    
+    if any(getattr(transformer.config, attr) % world_size != 0 for attr in ["n_head", "dim", "n_local_heads"]):
+        raise ValueError(f"Transformer dimensions are not divisible by {world_size} GPUs")
+    
+    transformer.config.n_head //= world_size
+    transformer.config.dim //= world_size
+    transformer.config.n_local_heads //= world_size
 
 def apply_tp(model: Transformer) -> None:
     try:
-        _apply_tp_Transformer(model)
+        apply_tp_transformer(model)
         for block in model.layers:
-            _apply_tp_ffn(block.feed_forward)
-            _apply_tp_attn(block.attention)
+            apply_tp_ffn(block.feed_forward)
+            apply_tp_attn(block.attention)
     except ValueError as e:
-        print(f"Error applying tensor parallelism: {e}")
-        print("Please ensure your model dimensions are divisible by the number of GPUs.")
+        print(f"Error applying tensor parallelism: {e}\nEnsure model dimensions are divisible by number of GPUs.")
         raise
+
+def barrier():
+    print('Performing barrier')
+    torch.cuda.synchronize()
+    dist.barrier()
+    
+def broadcast(tensor, src):
+    dist.broadcast(tensor, src=src)
+    
+def is_dist_initialized():
+    return dist.is_initialized()
+
+def reduce(tensor):
+    dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
