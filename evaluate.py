@@ -337,10 +337,14 @@ def generate(
     device, dtype = prompt.device, prompt.dtype
     embed_seq_length = embed_seq_length + speculate_k + 1 if is_speculative else embed_seq_length
     text_seq_length = text_seq_length + speculate_k + 1 if is_speculative else text_seq_length
-    draft_text_seq_length = (draft_encoded.size(-1) if draft_encoded else text_seq_length) + speculate_k + 1 + max_new_tokens  
-    draft_mm_seq_length = (draft_embedded.size(-2) if draft_embedded else embed_seq_length) + speculate_k + 1 + max_new_tokens  
+    draft_text_seq_length = (draft_encoded.size(-1) if draft_encoded is not None else text_seq_length) + speculate_k + 1 + max_new_tokens  
+    draft_mm_seq_length = (draft_embedded.size(-2) if draft_embedded is not None else embed_seq_length) + speculate_k + 1 + max_new_tokens 
     
-    draft_max_seq_length = max_seq_length if draft_max_seq_length is None and is_speculative else draft_mm_seq_length if draft_embedded else draft_text_seq_length 
+    if draft_max_seq_length is None and is_speculative:
+        draft_max_seq_length = (max_seq_length if max_seq_length is not None else 
+                                draft_mm_seq_length if draft_embedded is not None else 
+                                draft_text_seq_length)
+
     if max_seq_length is None:
         max_seq_length = embed_seq_length    
 
