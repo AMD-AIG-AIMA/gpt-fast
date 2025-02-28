@@ -208,7 +208,7 @@ class QwenVisionModelArgs:
     mropes: bool = True,
     image_factor: int = 28,
     min_pixels: int = 4 * 28 * 28,
-    max_pixels: int = 2048 * 28 * 28,
+    max_pixels: int = 4098 * 28 * 28,
     max_ratio: int = 200,
 
 

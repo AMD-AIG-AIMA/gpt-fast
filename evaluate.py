@@ -154,8 +154,7 @@ def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torc
 
 def model_forward(model, x, input_pos):
     return model(x, input_pos)
-    # TODO: Check if draft_model_forward is required
-    # TODO: Check an all_reduce is required here
+    # TODO: Add seperate model_forward for draft model to prevent recompilation
 
 def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
@@ -311,7 +310,7 @@ def generate(
     """
     Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
     """
-    # print('before: ', prompt)
+    print('embeded shape: ', embedded.shape)
     image_grid_thw = sampling_kwargs.pop('image_grid_thw', None)
     is_speculative = draft_model is not None
     multimodal = True if embedded is not None else False
