@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple, Union, Dict, Type
+
 import math
+
 import torch
 import torch.nn as nn
 from PIL import Image
@@ -15,6 +17,7 @@ from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLVi
 
 from multimodal.llava.preprocessing import process_images, tokenizer_image_token, prepare_inputs_labels_for_multimodal, IMAGE_TOKEN_INDEX
 from multimodal.qwen2_5vl.preprocessing import process_prompt_for_qwen2_5vl, get_processor, prepare_input_embeds
+
 
 @dataclass 
 class VisionModelOutput:
@@ -38,6 +41,7 @@ class VisionModule(ABC, nn.Module):
         ABC.__init__(self)
         self.config = config
         self.dtype = dtype
+
         if device is not None:
             self._device = torch.device(device)
         else:
@@ -246,4 +250,4 @@ class Qwen2_5VisionModule(VisionModule):
     
     def floor_by_factor(self, x: int, factor: int):
         return int(math.floor(x / factor) * factor)
-        
+

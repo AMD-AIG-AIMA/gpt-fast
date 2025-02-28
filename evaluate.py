@@ -16,6 +16,7 @@ from tp import init_dist, _get_rank, barrier,broadcast, is_dist_initialized, red
 from model import Transformer
 from tokenizer import get_tokenizer
 from multimodal.vision_modules import VisionModule
+
 from time_profiler import TimeProfiler
 from transformers import BatchFeature  
 TimeProfiler.set_warm_up(0)
@@ -575,6 +576,7 @@ def main(
                                                 checkpoint_path=vision_checkpoints,
                                                 dtype=precision,
                                                 device=device)
+
         vision_modules.eval_mode()
     else:
         vision_modules = None
@@ -591,6 +593,7 @@ def main(
                                                         checkpoint_path=draft_vision_checkpoints,
                                                         dtype=precision,
                                                         device=device)
+
             draft_vision_modules.eval_mode()
         else:
             draft_vision_modules = None
