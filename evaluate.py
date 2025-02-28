@@ -12,13 +12,16 @@ from fastchat.model import get_conversation_template
 import itertools
 from typing import Optional, Tuple, Union
 
-from tp import maybe_init_dist, _get_rank
+from tp import init_dist, _get_rank, barrier,broadcast, is_dist_initialized, reduce
 from model import Transformer
 from tokenizer import get_tokenizer
 from multimodal.vision_modules import VisionModule
 
 from time_profiler import TimeProfiler
+from transformers import BatchFeature  
 TimeProfiler.set_warm_up(0)
+torch._logging.set_logs(graph_breaks=True, recompiles=True)
+import ast 
 
 MODEL_TO_TEMPLATE = {
     "llama-2-7b-chat": "llama-2-chat",
@@ -66,14 +69,27 @@ def load_benchmark_data(bench_name, bench_args=None):
     elif bench_name in ['MMMU']:
         # A multimodal benchmark dataset
         from datasets import load_dataset
-        categories = getattr(bench_args, 'categories', ['Design'])
+        categories = getattr(bench_args, 'categories',['Accounting', 'Agriculture', 'Architecture_and_Engineering', 'Art',
+                                                       'Art_Theory', 'Basic_Medical_Science', 'Biology', 'Chemistry',
+                                                       'Clinical_Medicine', 'Computer_Science', 'Design',
+                                                       'Diagnostics_and_Laboratory_Medicine', 'Economics', 'Electronics',
+                                                       'Energy_and_Power', 'Finance', 'Geography', 'History', 'Literature',
+                                                       'Manage', 'Marketing', 'Materials', 'Math', 'Mechanical_Engineering',
+                                                       'Music', 'Pharmacy', 'Physics', 'Psychology', 'Public_Health', 'Sociology'])
         split = getattr(bench_args, 'split', 'dev')
         questions = []
         for cat in categories:
             dataset =  load_dataset("MMMU/MMMU", cat)[split]
             for i in range(len(dataset)):
                 question = {}
-                question['turns'] = [dataset[i]['question']]
+                question['cat'] = cat
+                turns = dataset[i]['question']
+                for element in ast.literal_eval(dataset[i]['options']):
+                    if '<image' in element:
+                        turns+=element
+                if '<image' in dataset[i]['explanation']:
+                    turns+=dataset[i]['explanation']
+                question['turns'] = [turns]
                 question['images'] = []
                 for j in range(1, 8):
                     if dataset[i][f'image_{j}'] is not None:
@@ -139,6 +155,7 @@ def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torc
 
 def model_forward(model, x, input_pos):
     return model(x, input_pos)
+    # TODO: Add seperate model_forward for draft model to prevent recompilation
 
 def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
@@ -192,11 +209,17 @@ def token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, 
         draft_probs = draft_probs.squeeze(1)
     p = draft_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
     q = target_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
+    if is_dist_initialized():
+        reduce(p)
+        reduce(q)
     accept_draft_prob = torch.minimum(torch.ones(()), q[:speculate_k]/ p)
-    rejected_locations = (torch.rand_like(accept_draft_prob) > accept_draft_prob).nonzero()
+    rand_vals = torch.rand_like(accept_draft_prob)
+    if is_dist_initialized():
+        broadcast(rand_vals, 0)
+    rejected_locations = (rand_vals > accept_draft_prob).nonzero()
 
     if rejected_locations.shape[0] == 0: # All draft tokens have been accepted
-        accept_length = speculate_k + 1
+        accept_length = speculate_k
         last_token = multinomial_sample_one_no_sync(target_probs[-1])
         return torch.cat([draft_tokens, last_token])
     else:
@@ -227,7 +250,6 @@ def speculative_decode(
     if draf_input_pos is None:
         draf_input_pos = input_pos
     orig_input_pos = torch.tensor([draf_input_pos], dtype=torch.int64, device=device)
-    
     # Get draft tokens and probabilities
     with TimeProfiler("Speculate Decode", model_size=model_size(draft_model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(speculate_k)
@@ -238,13 +260,13 @@ def speculative_decode(
             speculate_k, 
             **sampling_kwargs
         )
-
     draft_tokens = torch.cat(draft_tokens)
     if len(draft_tokens.shape) > 1:
         draft_tokens = draft_tokens.view(-1)
     # parallel inference on target model using draft tokens
     with TimeProfiler("Verification", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
+        # TODO: check if barrier is required here
         target_logits = model_forward(
             model,
             torch.cat([cur_token.view(1), draft_tokens]).view(1, -1),
@@ -282,13 +304,22 @@ def generate(
     embedded: Optional[torch.Tensor] = None,
     draft_encoded: Optional[torch.Tensor] = None,
     draft_embedded: Optional[torch.Tensor] = None,
+    max_seq_length: Optional[int] = None,
+    draft_max_seq_length: Optional[int] = None,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
     Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
     """
+    print('embeded shape: ', embedded.shape)
+    image_grid_thw = sampling_kwargs.pop('image_grid_thw', None)
     is_speculative = draft_model is not None
     multimodal = True if embedded is not None else False
+    mrope = model.config.mm_config.mrope if getattr(model.config.mm_config, "mrope", None) is not None else None
+    if is_speculative:
+        draft_mrope = draft_model.config.mm_config.mrope if getattr(draft_model.config.mm_config, "mrope", None) is not None else None
+    else:
+        draft_mrope = None
     draft_multimodal = True if draft_embedded is not None else False
     if draft_multimodal and draft_encoded is not None:
         raise ValueError("Draft model is multimodal, but `draft_encoded` is also provided! \
@@ -306,26 +337,40 @@ def generate(
     device, dtype = prompt.device, prompt.dtype
     embed_seq_length = embed_seq_length + speculate_k + 1 if is_speculative else embed_seq_length
     text_seq_length = text_seq_length + speculate_k + 1 if is_speculative else text_seq_length
-    draft_text_seq_length = draft_encoded.size(-1) + speculate_k + 1 + max_new_tokens if draft_encoded is not None else text_seq_length
+    draft_text_seq_length = (draft_encoded.size(-1) if draft_encoded is not None else text_seq_length) + speculate_k + 1 + max_new_tokens  
+    draft_mm_seq_length = (draft_embedded.size(-2) if draft_embedded is not None else embed_seq_length) + speculate_k + 1 + max_new_tokens 
+    
+    if draft_max_seq_length is None and is_speculative:
+        draft_max_seq_length = (max_seq_length if max_seq_length is not None else 
+                                draft_mm_seq_length if draft_embedded is not None else 
+                                draft_text_seq_length)
+
+    if max_seq_length is None:
+        max_seq_length = embed_seq_length    
+
     if not multimodal:
         assert text_seq_length == embed_seq_length, "Text-only model should have the same embed_seq_length as text_seq_length"
     with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
-        if is_speculative and draft_model is not model:
-            if draft_embedded is not None:
-                # Draft is multimodal
-                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=embed_seq_length)
-            else:
-                # Draft is text only
-                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_text_seq_length)
 
+        model.setup_caches(max_batch_size=batch_size, max_seq_length=max_seq_length,
+                            mrope=mrope,
+                            prompt=prompt,
+                            image_grid_thw=image_grid_thw,
+                            )              
+        if is_speculative and draft_model is not model:
+            draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=draft_max_seq_length,
+                                        mrope=draft_mrope,
+                                        prompt=prompt,
+                                        image_grid_thw=image_grid_thw,
+                                        )
     # create an empty tensor of the expected final shape and fill in the current tokens
     seq = torch.empty(batch_size, text_seq_length, dtype=dtype, device=device)
     # We are just making the same prompt for every batch
     prompt = prompt.view(1, -1).repeat(batch_size, 1)
     seq[:, :input_text_length] = prompt
     input_pos = torch.arange(0, input_embed_length, device=device)
-    draft_input_pos = torch.arange(0, draft_encoded.size(-1), device=device) if draft_encoded is not None else input_pos
+    draft_input_size = draft_embedded.size(-2) if draft_embedded is not None else (draft_encoded.size(-1) if draft_encoded is not None else None)
+    draft_input_pos = torch.arange(0, draft_input_size, device=device) if draft_input_size is not None else input_pos
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
@@ -335,7 +380,7 @@ def generate(
             next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
         if is_speculative:
             if draft_multimodal:
-                prefill(draft_model, draft_embedded, input_pos, embedded=True, **sampling_kwargs)
+                prefill(draft_model, draft_embedded, draft_input_pos, embedded=True, **sampling_kwargs)
             elif multimodal:
                 # Target multimodal, draft text only
                 prefill(draft_model, draft_encoded.view(batch_size, -1) , draft_input_pos, **sampling_kwargs)
@@ -348,8 +393,15 @@ def generate(
     accept_counts = [0] * (speculate_k + 1)
 
     if is_speculative:
-        input_pos = input_pos.item()  # for speculative decoding easier to keep on host
-        draft_input_pos = draft_encoded.size(-1) if draft_encoded is not None else input_pos
+        input_pos = input_pos.item()  # for speculative decoding easier to keep on host\
+            
+        if draft_embedded is not None:
+            draft_input_pos = draft_embedded.size(-2)
+        elif draft_encoded is not None:
+            draft_input_pos = draft_encoded.size(-1)
+        else:
+            draft_input_pos = input_pos        
+        
         max_pos = embed_seq_length - 1 - (speculate_k + 1)
         while input_pos < max_pos:
             cur_token = next_token.view(())
@@ -394,6 +446,8 @@ def generate(
     generate_stats = {
         'accept_counts': accept_counts
     }
+    
+    # print('after: ', seq)
     return seq, generate_stats
 
 def encode_tokens(tokenizer, string, bos=True, device=default_device):
@@ -497,7 +551,7 @@ def main(
 ):
     global print
     # Initialize distributed setup
-    rank = maybe_init_dist()
+    rank = init_dist()
     use_tp = rank is not None
     if use_tp:
         if rank != 0:
@@ -520,7 +574,9 @@ def main(
         vision_modules = VisionModule.from_name(checkpoint_path.parent.name, 
                                                 config=model.config.mm_config, 
                                                 checkpoint_path=vision_checkpoints,
-                                                dtype=precision)
+                                                dtype=precision,
+                                                device=device)
+
         vision_modules.eval_mode()
     else:
         vision_modules = None
@@ -528,13 +584,16 @@ def main(
     if is_speculative:
         print(f"Loading draft model from {draft_checkpoint_path}")
         draft_model = _load_model(draft_checkpoint_path, device, precision, use_tp=False)
+        draft_model.requires_grad_(False) 
         draft_multimodal =  getattr(draft_model.config, "mm_config", None) is not None
         if draft_multimodal:
             draft_vision_checkpoints = str(draft_checkpoint_path.parent / "vision_modules.pth")
             draft_vision_modules = VisionModule.from_name(draft_checkpoint_path.parent.name, 
                                                         config=draft_model.config.mm_config, 
                                                         checkpoint_path=draft_vision_checkpoints,
-                                                        dtype=precision)
+                                                        dtype=precision,
+                                                        device=device)
+
             draft_vision_modules.eval_mode()
         else:
             draft_vision_modules = None
@@ -545,7 +604,7 @@ def main(
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
 
     tokenizer = get_tokenizer(checkpoint_path.parent / "tokenizer.model", checkpoint_path)
-
+    
     if compile:
         if is_speculative:
             global model_forward, logits_to_probs
@@ -564,7 +623,7 @@ def main(
     
     model_template = get_model_template(checkpoint_path.parent.name)
     
-    system_message = ("You are a helpful, respectful and honest assistant. Always answer as helpfully as possible. ")
+    system_message = ("You are a helpful assistant.")
     conv = get_conversation_template(model_template)
     
     # Warmup calls
@@ -593,12 +652,14 @@ def main(
                 speculate_k=speculate_k,
                 callback=lambda x: x,
                 do_block_verify=do_block_verify,
+                max_seq_length = args.max_seq_length,
+                draft_max_seq_length = args.draft_max_seq_length,
+
             )
 
     if num_questions is not None:
         questions = questions[:num_questions]
     for question in tqdm(questions):
-        torch.manual_seed(0)
         conv.messages = []
         conv.set_system_message(system_message)
         
@@ -611,7 +672,7 @@ def main(
             conv.append_message(conv.roles[0], qs)
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
-            
+            generate_configs = {}
             if not multimodal:
                 encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
                 embedded = None
@@ -624,6 +685,10 @@ def main(
                             prompt=prompt, tokenizer=tokenizer, images=question["images"],
                             embed_tokens=model.tok_embeddings, 
                         )
+                        if isinstance(encoded, BatchFeature):
+                            if 'image_grid_thw' in encoded:
+                                generate_configs['image_grid_thw'] = encoded['image_grid_thw']
+                            encoded = encoded['input_ids']
                         if is_speculative and draft_multimodal:
                             _, draft_embedded = draft_vision_modules(
                                 prompt=prompt, tokenizer=tokenizer, images=question["images"],
@@ -638,7 +703,6 @@ def main(
                             draft_encoded = None
                             draft_embedded = None
                         encoded = encoded.squeeze(0)
-            
             start_time = time.time()
             with TimeProfiler("generate"):
                 output, metrics = generate(
@@ -655,7 +719,10 @@ def main(
                     do_block_verify=do_block_verify,
                     embedded=embedded,
                     draft_encoded=draft_encoded,
-                    draft_embedded=draft_embedded
+                    draft_embedded=draft_embedded,
+                    max_seq_length = args.max_seq_length,
+                    draft_max_seq_length = args.draft_max_seq_length,
+                    **generate_configs,
                 )
             end_time = time.time()
             
@@ -686,16 +753,26 @@ def main(
             conv.messages[-1][-1] = generated_text
 
         results.append({
+            'model': str(checkpoint_path.parent.name),
+            'draft_model': str(draft_checkpoint_path.parent.name) if is_speculative else None,
+            'benchmark': bench_name,
+            'categories': question.get('cat', None),
             'question_id': question.get('question_id', len(results)),
             'turns': turns,
             'tokens_generated': new_tokens,
             'walltime': wall_time,
             'speed': speeds[-len(turns):],
+            'speculative k': args.speculate_k if is_speculative else None,
             'accept_counts': metrics['accept_counts'] if is_speculative else None,
+            'compile': args.compile,
+            'compile_prefill': args.compile_prefill,
+            'temperature': temperature,
+            'top_k': top_k,
+            
         })
     
     if rank == 0 or rank is None:
-        output_file = Path(f"./results_{bench_name}.json")
+        output_file = f"./results_{time.strftime('%Y%m%d-%H%M%S')}.json"
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         
@@ -719,16 +796,16 @@ def main(
             total_counts = sum(counts_aggregated)
             acceptance_probs = [count / total_counts for count in counts_aggregated]
             print(f"Acceptance probs: {acceptance_probs}")
-            print(f"Mean Accepted: {sum([(idx) * count for idx, count in enumerate(counts_aggregated)]) / sum(counts_aggregated):.2f}")
+            print(f"Mean Accepted: {sum([(idx+1) * count for idx, count in enumerate(counts_aggregated)]) / sum(counts_aggregated):.2f}")
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Evaluate model on benchmark datasets.')
     parser.add_argument('--bench_name', type=str, required=True, help='Name of the benchmark (e.g., mt_bench, human_eval)')
     parser.add_argument('--checkpoint_path', type=Path, required=True, help='Path to the model checkpoint')
-    parser.add_argument('--max_new_tokens', type=int, default=1024, help='Maximum number of new tokens to generate')
+    parser.add_argument('--max_new_tokens', type=int, default=100, help='Maximum number of new tokens to generate')
     parser.add_argument('--temperature', type=float, default=0.8, help='Temperature for sampling')
-    parser.add_argument('--top_k', type=int, default=200, help='Top-k for sampling')
+    parser.add_argument('--top_k', type=int, default=1, help='Top-k for sampling')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation')
     parser.add_argument('--draft_checkpoint_path', type=Path, default=None, help='Path to the draft model checkpoint for speculative decoding')
     parser.add_argument('--speculate_k', type=int, default=5, help='Speculative execution depth')
@@ -737,8 +814,15 @@ if __name__ == '__main__':
     parser.add_argument('--num_questions', type=int, default=None, help='Number of questions to evaluate')
     parser.add_argument('--warmup', type=int, default=5, help='Number of warmup steps')
     parser.add_argument('--do_block_verify', action='store_true', help='Whether to verify with block acceptance probability')
+    parser.add_argument("--random_seed", default=None, type=int, help="Random seed")
+    parser.add_argument("--max_seq_length", default=None, type=int, help="Maximum sequence length for the model")
+    parser.add_argument("--draft_max_seq_length", default=None, type=int, help="Maximum sequence length for the draft model")
+
     
+
     args = parser.parse_args()
+    if args.random_seed:
+        torch.manual_seed(args.random_seed)
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
          args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
          args.warmup, args.do_block_verify)

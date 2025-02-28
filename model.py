@@ -13,8 +13,8 @@ from torch import Tensor
 from torch.nn import functional as F
 
 
-from multimodal.mm_config import MultimodalModelArgs
-
+from multimodal.mm_config import MultimodalModelArgs, QwenVisionModelArgs
+from multimodal.qwen2_5vl.preprocessing import get_rope_index
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
@@ -104,6 +104,21 @@ transformer_configs = {
     "llava-onevision-qwen2-72b-si":dict(block_size=131072, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=29568, vocab_size=152064,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("llava-onevision-qwen2-72b-si")
     ),
+    "Qwen2.5-VL-3B-Instruct":dict(block_size=32768, n_layer=36, n_head=16, n_local_heads=2, dim=2048, intermediate_size=11008, vocab_size=151936,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-3B-Instruct")
+    ),
+    "Qwen2.5-VL-7B-Instruct":dict(block_size=32768, n_layer=28, n_head=28, n_local_heads=4, dim=3584, intermediate_size=18944, vocab_size=152064,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-7B-Instruct")
+    ),
+    "Qwen2.5-VL-72B-Instruct":dict(block_size=32768, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=29568, vocab_size=152064,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-72B-Instruct")
+    ),
+    "Qwen2.5-3B-Instruct":dict(block_size=32768, n_layer=36, n_head=16, n_local_heads=2, dim=2048, intermediate_size=11008, vocab_size=151936,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True,
+    ),
+    "Qwen2.5-7B-Instruct":dict(block_size=131072, n_layer=28, n_head=28, n_local_heads=4, dim=3584, intermediate_size=18944, vocab_size=152064,
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True,
+    ),
 }
 
 class KVCache(nn.Module):
@@ -139,9 +154,13 @@ class Transformer(nn.Module):
         self.max_batch_size = -1
         self.max_seq_length = -1
 
-    def setup_caches(self, max_batch_size, max_seq_length):
-        if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
+    def setup_caches(self, max_batch_size, max_seq_length, mrope, prompt, image_grid_thw):
+        if not mrope and self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
             return
+        if mrope:
+            position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw= image_grid_thw, mm_config=self.config.mm_config)
+        else:
+            position_ids = None
         head_dim = self.config.dim // self.config.n_head
         max_seq_length = find_multiple(max_seq_length, 8)
         self.max_seq_length = max_seq_length
@@ -154,8 +173,12 @@ class Transformer(nn.Module):
             dtype = self.output.scales_and_zeros.dtype
         for b in self.layers:
             b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
-
-        self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype, self.config.rope_scaling)
+        if mrope:
+            if position_ids is None:
+                raise ValueError('Multimodal Rope requires the position id')
+            self.freqs_cis = precompute_freqs_cis_for_qwen2_5(self.config.block_size, self.config.dim // self.config.n_head, position_ids, self.config.rope_base, dtype, self.config.rope_scaling)
+        else:
+            self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype, self.config.rope_scaling)
         self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
 
     def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None, embedded=False) -> Tensor:
@@ -225,7 +248,7 @@ class Attention(nn.Module):
         q = q.view(bsz, seqlen, self.n_head, self.head_dim)
         k = k.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         v = v.view(bsz, seqlen, self.n_local_heads, self.head_dim)
-
+        
         q = apply_rotary_emb(q, freqs_cis)
         k = apply_rotary_emb(k, freqs_cis)
 
@@ -305,6 +328,32 @@ def precompute_freqs_cis(
     cache = torch.stack([freqs_cis.real, freqs_cis.imag], dim=-1)
     return cache.to(dtype=dtype)
 
+    
+def flatten_freqs(freq, mrope_section):
+    return torch.cat([m[i % 3] for i, m in enumerate(freq.split(mrope_section, dim=-1))], dim=-1).squeeze()
+
+def precompute_freqs_cis_for_qwen2_5(
+    seq_len: int, n_elem: int, position_ids: torch.tensor, 
+    base: int = 10000, 
+    dtype: torch.dtype = torch.bfloat16,
+    rope_scaling: Optional[dict] = None,
+    mrope_section: Optional[list] = [16,24,24],
+    ):
+    freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem))
+    if rope_scaling is not None:
+        freqs = apply_rope_scaling(freqs, rope_scaling)
+    t = torch.arange(position_ids[0,0,-1]+1, position_ids[0,0,-1] + 1 + seq_len - position_ids.shape[-1])
+    t = t.expand(3,position_ids.shape[1],-1)
+    position_ids = torch.cat([position_ids, t], dim=-1)
+    freqs_expanded = freqs[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
+    position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
+    freqs = torch.matmul(freqs_expanded.float(), position_ids_expanded.float()).transpose(2, 3)
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+    cache = torch.stack([flatten_freqs(freqs_cis.real, mrope_section), flatten_freqs(freqs_cis.imag, mrope_section)], dim=-1)
+    return cache.to(dtype=dtype)
+    
+
+
 
 def apply_rotary_emb(x: Tensor, freqs_cis: Tensor) -> Tensor:
     xshaped = x.float().reshape(*x.shape[:-1], -1, 2)
@@ -319,3 +368,8 @@ def apply_rotary_emb(x: Tensor, freqs_cis: Tensor) -> Tensor:
 
     x_out2 = x_out2.flatten(3)
     return x_out2.type_as(x)
+
+
+
+
+    
