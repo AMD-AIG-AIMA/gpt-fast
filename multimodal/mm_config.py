@@ -85,6 +85,35 @@ class LlavaMultimodalModelArgs(MultimodalModelArgs):
     hidden_size: int = 3584 # This is the hidden dimension from the LLM
 
 
+@MultimodalModelArgs.register("qwen")
+@dataclass
+class QwenVisionModelArgs(MultimodalModelArgs):
+    depth: int = 32,
+    hidden_act: str = "silu",
+    hidden_size: int = 1280,
+    intermediate_size: int = 3420,
+    num_heads: int = 16,
+    in_chans: int = 3,
+    out_hidden_size: int = 2048,
+    patch_size: int = 14,
+    spatial_merge_size: int = 2,
+    spatial_patch_size: int = 14,
+    window_size: int = 112,
+    fullatt_block_indexes: list = [
+      7,
+      15,
+      23,
+      31
+    ],
+    tokens_per_second: int = 2,
+    temporal_patch_size: int = 2,
+    mropes: bool = True,
+    image_factor: int = 28,
+    min_pixels: int = 4 * 28 * 28,
+    max_pixels: int = 4098 * 28 * 28,
+    max_ratio: int = 200
+        
+
 @MultimodalModelArgs.register("llama")
 @dataclass
 class LlamaMultimodalModelArgs(MultimodalModelArgs,MllamaConfig):
@@ -232,10 +261,76 @@ mm_transformer_config = {
         use_mm_proj= True,
         hidden_size=896,
     ),
+    "Qwen2.5-VL-3B-Instruct": dict(
+        depth= 32,
+        hidden_act= "silu",
+        hidden_size= 1280,
+        intermediate_size= 3420,
+        num_heads= 16,
+        in_chans= 3,
+        out_hidden_size= 2048,
+        patch_size= 14,
+        spatial_merge_size= 2,
+        spatial_patch_size= 14,
+        window_size= 112,
+        fullatt_block_indexes= [
+          7,
+          15,
+          23,
+          31
+        ],
+        tokens_per_second= 2,
+        temporal_patch_size= 2
+        ),
+        "Qwen2.5-VL-7B-Instruct": dict(
+        depth= 32,
+        hidden_act= "silu",
+        hidden_size= 1280,
+        intermediate_size= 3420,
+        num_heads= 16,
+        in_chans= 3,
+        out_hidden_size= 3584,
+        patch_size= 14,
+        spatial_merge_size= 2,
+        spatial_patch_size= 14,
+        window_size= 112,
+        fullatt_block_indexes= [
+          7,
+          15,
+          23,
+          31
+        ],
+        tokens_per_second= 2,
+        temporal_patch_size= 2
+        ),
+        "Qwen2.5-VL-72B-Instruct": dict(
+        depth= 32,
+        hidden_act= "silu",
+        hidden_size= 1280,
+        intermediate_size= 3456,
+        num_heads= 16,
+        in_chans= 3,
+        out_hidden_size= 8192,
+        patch_size= 14,
+        spatial_merge_size= 2,
+        spatial_patch_size= 14,
+        window_size= 112,
+        fullatt_block_indexes= [
+          7,
+          15,
+          23,
+          31
+        ],
+        tokens_per_second= 2,
+        temporal_patch_size= 2
+        ),
     "llama-3.2-11b-vision-instruct": dict(
-        attention_heads=16,
-        hidden_act="gelu",
-        hidden_size=1280,
-        image_size=560,
-    ),
+          attention_heads=16,
+          hidden_act="gelu",
+          hidden_size=1280,
+          image_size=560,
+      ),
 }
+  
+  
+

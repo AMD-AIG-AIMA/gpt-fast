@@ -1,13 +1,22 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple, Union, Dict, Type
+
+import math
+
 import torch
 import torch.nn as nn
 from PIL import Image
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from dataclasses import asdict
+
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
+from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLVisionConfig
 
 from multimodal.llava.preprocessing import process_images, tokenizer_image_token, prepare_inputs_labels_for_multimodal, IMAGE_TOKEN_INDEX
+from multimodal.qwen2_5vl.preprocessing import process_prompt_for_qwen2_5vl, get_processor, prepare_input_embeds
+from multimodal.mm_config import QwenVisionModelArgs 
 
 @dataclass 
 class VisionModelOutput:
@@ -31,9 +40,12 @@ class VisionModule(ABC, nn.Module):
         ABC.__init__(self)
         self.config = config
         self.dtype = dtype
-        self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         if device is not None:
             self._device = torch.device(device)
+        else:
+            self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            
         self._is_loaded = False
         self.to(self._device)
     
@@ -157,16 +169,95 @@ class LlavaVisionModule(VisionModule):
                                     image_sizes=[img.size for img in images])
         return input_ids, embeds[4].to(dtype=self.dtype)
     
+@VisionModule.register("Qwen2.5")
+class Qwen2_5VisionModule(VisionModule):
+    def __init__(
+          self,
+          config,
+          checkpoint_path: Optional[Path] = None,
+          dtype: torch.dtype = torch.float16,
+          device: Optional[Union[str, torch.device]] = None):
+        super().__init__(config, dtype, device)
+        name = Path(checkpoint_path).parent.name
+        self._processor_id = Path(*Path(checkpoint_path).parent.parts[-2:])
+        config_dc = QwenVisionModelArgs.from_name(name)
+        vision_config = Qwen2_5_VLVisionConfig(**asdict(config_dc))
+        self.vision_model = Qwen2_5_VisionTransformerPretrainedModel._from_config(vision_config)
+        if checkpoint_path is not None:
+             self.vision_model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
+        self.vision_model = self.vision_model.to(device=self._device, dtype=self.dtype)
+        self.image_factor = vision_config.image_factor[0]
+        self.min_pixels = vision_config.min_pixels[0]
+        self.max_pixels = vision_config.max_pixels[0]
+        self.max_ratio = vision_config.max_ratio[0]
+        # print(self.max_ratio, self.image_factor, self.min_pixels, self.max_pixels)
+        # blegh
+    def preprocess_images(self, images):
+        processed_images = []
+        for image in images:
+            processed_images.append(self.resize(image))
+        return processed_images
+    def forward(self,
+        prompt,
+        tokenizer,
+        images,
+        embed_tokens,
+        ):
+        original_prompt = prompt[:]
+        prompt = process_prompt_for_qwen2_5vl(prompt)
+        processor = get_processor(self._processor_id)
+        images = self.preprocess_images(images)
+        inputs = processor(
+            text=[prompt],
+            images=images,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(device=self._device, dtype=self.dtype)
+        
+        inputs_embeds = prepare_input_embeds(inputs['input_ids'], inputs['pixel_values'], inputs['image_grid_thw'], embed_tokens, self.vision_model,151655,self._device,self.dtype)
+
+        return inputs, inputs_embeds
+    
+    def resize(self, image):
+        resized_height, resized_width = self.get_resize_dims(image.height, image.width)
+        return image.resize((resized_width, resized_height))
+    
+    def get_resize_dims(self, height: int, width: int):
+        if max(height, width) / min(height, width) > self.max_ratio:
+            raise ValueError(
+                f"absolute aspect ratio must be smaller than {self.max_ratio}, got {max(height, width) / min(height, width)}"
+            )
+        h_bar = max(self.image_factor, self.round_by_factor(height, self.image_factor))
+        w_bar = max(self.image_factor, self.round_by_factor(width, self.image_factor))
+        if h_bar * w_bar > self.max_pixels:
+            beta = math.sqrt((height * width) / self.max_pixels)
+            h_bar = self.floor_by_factor(height / beta, self.image_factor)
+            w_bar = self.floor_by_factor(width / beta, self.image_factor)
+        elif h_bar * w_bar < self.min_pixels:
+            beta = math.sqrt(self.min_pixels / (height * width))
+            h_bar = self.ceil_by_factor(height * beta, self.image_factor)
+            w_bar = self.ceil_by_factor(width * beta, self.image_factor)
+        return h_bar, w_bar
+    
+    def round_by_factor(self, x: int, factor: int):
+        return round(x / factor) * factor
+    
+    def ceil_by_factor(self, x: int, factor: int):
+        return int(math.ceil(x / factor) * factor)
+    
+    def floor_by_factor(self, x: int, factor: int):
+        return int(math.floor(x / factor) * factor)
+      
 
 @VisionModule.register("llama")
 class LlamaVisionModule(VisionModule):
     def __init__(
-        self,
-        config,
-        checkpoint_path: Optional[Path] = None,
-        dtype: torch.dtype = torch.float16,
-        device: Optional[Union[str, torch.device]] = None
-    ):
+          self,
+          config,
+          checkpoint_path: Optional[Path] = None,
+          dtype: torch.dtype = torch.float16,
+          device: Optional[Union[str, torch.device]] = None):
         super().__init__(config, dtype, device)
         from transformers import MllamaVisionModel, MllamaProcessor
         self.vision_model = MllamaVisionModel._from_config(config)
