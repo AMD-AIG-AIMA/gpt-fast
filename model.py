@@ -4,8 +4,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 import math
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Union, Dict
 
 import torch
 import torch.nn as nn
@@ -36,6 +36,7 @@ class ModelArgs:
     rope_scaling: Optional[dict] = None
     wqkv_bias: Optional[bool] = False
     mm_config: Optional[MultimodalModelArgs] = None
+    cross_attention_layers: Optional[list] = field(default_factory=list) 
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -104,6 +105,10 @@ transformer_configs = {
     "llava-onevision-qwen2-72b-si":dict(block_size=131072, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=29568, vocab_size=152064,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("llava-onevision-qwen2-72b-si")
     ),
+    "llama-3.2-11b-vision-instruct": dict(block_size=131072, n_layer=40, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=500000,
+        rope_scaling=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_position_embeddings=8192), cross_attention_layers=[3,8,13,18,23,28,33,38],
+        mm_config=MultimodalModelArgs.from_name("llama-3.2-11b-vision-instruct")
+    ),
     "Qwen2.5-VL-3B-Instruct":dict(block_size=32768, n_layer=36, n_head=16, n_local_heads=2, dim=2048, intermediate_size=11008, vocab_size=151936,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-3B-Instruct")
     ),
@@ -131,7 +136,6 @@ class KVCache(nn.Module):
     def update(self, input_pos, k_val, v_val):
         # input_pos: [S], k_val: [B, H, S, D]
         assert input_pos.shape[0] == k_val.shape[2]
-
         k_out = self.k_cache
         v_out = self.v_cache
         k_out[:, :, input_pos] = k_val
@@ -143,9 +147,17 @@ class Transformer(nn.Module):
     def __init__(self, config: ModelArgs) -> None:
         super().__init__()
         self.config = config
-
-        self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
-        self.layers = nn.ModuleList(TransformerBlock(config) for _ in range(config.n_layer))
+        # Create specialized blocks at init time
+        cross_attention_layers = getattr(config, "cross_attention_layers", []) if config.mm_config else []
+        additional_tokens = 8 if len(cross_attention_layers)>0 else 0
+        self.tok_embeddings = nn.Embedding(config.vocab_size+additional_tokens, config.dim)
+        
+        self.layers = nn.ModuleList()
+        for i in range(config.n_layer):
+            if i in cross_attention_layers:
+                self.layers.append(CrossAttentionBlock(config))
+            else:
+                self.layers.append(TransformerBlock(config))
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
@@ -153,12 +165,18 @@ class Transformer(nn.Module):
         self.mask_cache: Optional[Tensor] = None
         self.max_batch_size = -1
         self.max_seq_length = -1
+        self.cross_attention_mask = None
+        self.cross_attention_mask_out = None
+        self.mrope = False
+        if hasattr(config, 'mm_config'):
+            self.mrope = getattr(config.mm_config, "mrope", False)
+            self.image_grid_thw=None
 
-    def setup_caches(self, max_batch_size, max_seq_length, mrope, prompt, image_grid_thw):
-        if not mrope and self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
+    def setup_caches(self, max_batch_size, max_seq_length, prompt):
+        if not self.mrope and self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
             return
-        if mrope:
-            position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw= image_grid_thw, mm_config=self.config.mm_config)
+        if self.mrope:
+            position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=getattr(self,'image_grid_thw', None), mm_config=self.config.mm_config)
         else:
             position_ids = None
         head_dim = self.config.dim // self.config.n_head
@@ -172,26 +190,39 @@ class Transformer(nn.Module):
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
         for b in self.layers:
-            b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
-        if mrope:
+            if hasattr(b,'attention'):
+                b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
+            if hasattr(b,'cross_attention'):
+                b.cross_attention.kv_cache = KVCache(max_batch_size, 10000, self.config.n_local_heads, head_dim, dtype)
+        if self.mrope:
             if position_ids is None:
                 raise ValueError('Multimodal Rope requires the position id')
-            self.freqs_cis = precompute_freqs_cis_for_qwen2_5(self.config.block_size, self.config.dim // self.config.n_head, position_ids, self.config.rope_base, dtype, self.config.rope_scaling)
+            self.freqs_cis = precompute_freqs_cis_for_qwen2_5(self.config.block_size, self.config.dim // self.config.n_head, 
+                                                              position_ids, self.config.rope_base, dtype, self.config.rope_scaling)
         else:
-            self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head, self.config.rope_base, dtype, self.config.rope_scaling)
+            self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head,
+                                                  self.config.rope_base, dtype, self.config.rope_scaling)
         self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
 
-    def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None, embedded=False) -> Tensor:
+    def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None, cross_states: Optional[Tensor] = None, 
+                embedded: Optional[Tensor] = None) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
-        mask = self.causal_mask[None, None, input_pos]
+        causal_mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
-        if not embedded:
+        if embedded is None:
             x = self.tok_embeddings(idx)
         else:
-            x = idx
+            x = embedded
 
-        for i, layer in enumerate(self.layers):
-            x = layer(x, input_pos, freqs_cis, mask)
+        # Pass both freqs_cis and cross_states to all layers
+        # Each block type will only use what it needs
+        for layer in self.layers:
+            # Each layer type will use the appropriate mask
+            x = layer(x, input_pos=input_pos, freqs_cis=freqs_cis, 
+                     cross_states=cross_states, 
+                     mask=causal_mask,
+                     cross_attention_mask=self.cross_attention_mask,
+                     cross_attention_mask_out=self.cross_attention_mask_out)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -209,7 +240,9 @@ class TransformerBlock(nn.Module):
         self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
 
-    def forward(self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor) -> Tensor:
+    def forward(self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor, cross_states: Optional[Tensor] = None, 
+    cross_attention_mask: Optional[Tensor] = None, cross_attention_mask_out: Optional[Tensor] = None) -> Tensor:
+        # Regular transformer block only uses causal mask
         h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
@@ -371,5 +404,85 @@ def apply_rotary_emb(x: Tensor, freqs_cis: Tensor) -> Tensor:
 
 
 
+class CrossAttentionBlock(nn.Module):
+    def __init__(self, config: ModelArgs) -> None:
+        super().__init__()
+        self.cross_attention = CrossAttention(config)
+        self.feed_forward = FeedForward(config)
+        self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
+        self.attention_norm = RMSNorm(config.dim, config.norm_eps)
+        self.cross_attn_attn_gate = torch.nn.Parameter(torch.zeros(1))
+        self.cross_attn_mlp_gate = torch.nn.Parameter(torch.zeros(1))
 
-    
+    def forward(self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor, cross_states: Optional[Tensor] = None, 
+                cross_attention_mask: Optional[Tensor] = None, cross_attention_mask_out: Optional[Tensor] = None) -> Tensor:
+        if cross_states is None and cross_attention_mask is None:
+            # Layer is not used, language model only
+            return x
+        cross_attention_mask=cross_attention_mask[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
+        cross_attention_mask_out=cross_attention_mask_out[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
+        # Cross attention block uses cross_attention_mask
+        h = x + self.cross_attention(self.attention_norm(x), cross_states, cross_attention_mask, input_pos) * self.cross_attn_attn_gate.tanh()
+        out = h + self.feed_forward(self.ffn_norm(h)) * self.cross_attn_mlp_gate.tanh() * cross_attention_mask_out[:,0]
+        return out
+
+class CrossAttention(nn.Module):
+    def __init__(self, config: ModelArgs):
+        super().__init__()
+        assert config.dim % config.n_head == 0
+
+        # Separate projections for query and cross kv
+        self.wq = nn.Linear(config.dim, config.dim, bias=getattr(config, "wqkv_bias", False))
+        kv_dim = 2 * config.n_local_heads * config.head_dim  # combined k and v
+        self.wkv = nn.Linear(config.dim, kv_dim, bias=getattr(config, "wqkv_bias", False))
+        self.wo = nn.Linear(config.dim, config.dim, bias=False)
+        
+        # Add normalizations for query and key
+        self.q_norm = RMSNorm(config.head_dim, eps=config.norm_eps)
+        self.k_norm = RMSNorm(config.head_dim, eps=config.norm_eps)
+        
+        self.kv_cache = None
+        self.n_head = config.n_head
+        self.head_dim = config.head_dim
+        self.n_local_heads = config.n_local_heads
+        self.dim = config.dim
+
+    def forward(self, x: Tensor, cross_states: Optional[Tensor] = None, mask: Optional[Tensor] = None, input_pos: Optional[Tensor] = None) -> Tensor:
+        bsz, seqlen, _ = x.shape
+
+        # Project and normalize query from input sequence
+        q = self.wq(x)
+        q = q.view(bsz, seqlen, self.n_head, self.head_dim).transpose(1, 2)
+        q = self.q_norm(q)
+
+        if cross_states is not None:
+            # Project key and value from cross attention states
+            kv_size = self.n_local_heads * self.head_dim
+            k, v = self.wkv(cross_states).split([kv_size, kv_size], dim=-1)
+            k = k.view(bsz, -1, self.n_local_heads, self.head_dim).transpose(1, 2)
+            v = v.view(bsz, -1, self.n_local_heads, self.head_dim).transpose(1, 2)
+            
+            # Update cache if using incremental decoding
+            self.cache_size = torch.arange(k.shape[2], device=k.device)
+            if self.kv_cache is not None:
+                k, v = self.kv_cache.update(self.cache_size, k, v)
+        else:
+            # During decoding (after prefill), use cached key/values
+            k, v = self.kv_cache.k_cache, self.kv_cache.v_cache
+
+        k,v = k[:,:,:len(self.cache_size),:], v[:,:,:len(self.cache_size),:]
+        # Repeat KV heads if necessary
+        k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+        v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
+
+        # Normalize key states
+        k = self.k_norm(k)
+
+        # Compute attention
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
+
+        # Reshape and project output
+        y = y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
+        y = self.wo(y)
+
+        return y

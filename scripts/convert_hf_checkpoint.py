@@ -73,6 +73,14 @@ def convert_hf_checkpoint(
         "model.layers.{}.mlp.down_proj.weight": "layers.{}.feed_forward.w2.weight",
         "model.layers.{}.input_layernorm.weight": "layers.{}.attention_norm.weight",
         "model.layers.{}.post_attention_layernorm.weight": "layers.{}.ffn_norm.weight",
+        "model.layers.{}.cross_attn.k_norm.weight": "layers.{}.cross_attention.k_norm.weight",
+        "model.layers.{}.cross_attn.k_proj.weight": "layers.{}.cross_attention.wk.weight",
+        "model.layers.{}.cross_attn.o_proj.weight": "layers.{}.cross_attention.wo.weight",
+        "model.layers.{}.cross_attn.q_norm.weight": "layers.{}.cross_attention.q_norm.weight",
+        "model.layers.{}.cross_attn.q_proj.weight": "layers.{}.cross_attention.wq.weight",
+        "model.layers.{}.cross_attn.v_proj.weight": "layers.{}.cross_attention.wv.weight",
+        "model.layers.{}.cross_attn_attn_gate": "layers.{}.cross_attn_attn_gate",
+        "model.layers.{}.cross_attn_mlp_gate": "layers.{}.cross_attn_mlp_gate",
         "model.norm.weight": "norm.weight",
         "lm_head.weight": "output.weight",
     }
@@ -102,19 +110,29 @@ def convert_hf_checkpoint(
        else:
            state_dict = torch.load(str(file), map_location="cpu", mmap=True, weights_only=True)
            merged_result.update(state_dict)
+    # Remove 'language_model' prefix from keys
+    merged_result = {
+        k[len("language_model."):] if k.startswith("language_model.") else k: v 
+        for k, v in merged_result.items()
+    }
     final_result = {}
     if 'lm_head.weight' not in merged_result:
         merged_result['lm_head.weight'] = merged_result['model.embed_tokens.weight']
     if "llava" in model_name.lower():
         save_llava_vision_parts(merged_result, checkpoint_dir)
-    if "qwen2.5" in model_name.lower():
+    elif "llama" in model_name.lower() and "vision" in model_name.lower():
+        save_llama_vision_parts(merged_result, checkpoint_dir)
+    elif "qwen2.5" in model_name.lower():
         save_qwen2_5vl_vision_parts(merged_result, checkpoint_dir)
     for key, value in merged_result.items():
         if "llava" in model_name.lower() and key.startswith(
             ("model.vision_tower", "model.mm_projector", "model.image_newline")
         ):
             continue  # Skip these keys for final_result
-        if "qwen2.5" in model_name.lower() and key.startswith("visual"):
+        elif "llama" in model_name.lower() and key.startswith(
+            ("vision_model", "multi_modal_projector")):
+            continue  # Skip these keys for final_result
+        elif "qwen2.5" in model_name.lower() and key.startswith("visual"):
             continue
         if "layers" in key:
             abstract_key = re.sub(r'(\d+)', '{}', key)
@@ -135,8 +153,12 @@ def convert_hf_checkpoint(
             v = final_result[key.replace("wq", "wv")]
             q = permute(q, config.n_head)
             k = permute(k, config.n_local_heads)
-            final_result[key.replace("wq", "wqkv")] = torch.cat([q, k, v])
-            del final_result[key]
+            if 'cross_attention' in key:
+                final_result[key] = q
+                final_result[key.replace("wq", "wkv")] = torch.cat([k, v])
+            else:
+                final_result[key.replace("wq", "wqkv")] = torch.cat([q, k, v])
+                del final_result[key]
             del final_result[key.replace("wq", "wk")]
             del final_result[key.replace("wq", "wv")]
     print(f"Saving checkpoint to {checkpoint_dir / 'model.pth'}")
@@ -213,6 +235,22 @@ def save_qwen2_5vl_vision_parts(merged_result, checkpoint_dir):
         if key.startswith("visual"):
             # getting the visual. out of the key
             vision_modules[key[7:]] = value
+    file_path = checkpoint_dir / "vision_modules.pth"
+    torch.save(vision_modules, file_path)
+    print(f"Saved vision_modules checkpoint to {file_path}")
+
+def save_llama_vision_parts(merged_result, checkpoint_dir):
+    parts = [
+        "vision_model",
+        "multi_modal_projector"]
+    vision_modules = {}
+    for key, value in merged_result.items():
+        for part in parts:
+            if key.startswith(f"{part}"):
+                # getting the model. out of the key
+                vision_modules[key] = value
+                break
+ 
     file_path = checkpoint_dir / "vision_modules.pth"
     torch.save(vision_modules, file_path)
     print(f"Saved vision_modules checkpoint to {file_path}")
