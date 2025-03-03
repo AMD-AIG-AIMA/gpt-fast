@@ -189,9 +189,7 @@ class Qwen2_5VisionModule(VisionModule):
         self.image_factor = vision_config.image_factor[0]
         self.min_pixels = vision_config.min_pixels[0]
         self.max_pixels = vision_config.max_pixels[0]
-        self.max_ratio = vision_config.max_ratio[0]
-        # print(self.max_ratio, self.image_factor, self.min_pixels, self.max_pixels)
-        # blegh
+        self.max_ratio = vision_config.max_ratio
     def preprocess_images(self, images):
         processed_images = []
         for image in images:

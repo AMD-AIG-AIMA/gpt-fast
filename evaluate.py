@@ -202,8 +202,8 @@ def token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, 
     p = draft_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
     q = target_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
     if is_dist_initialized():
-        reduce(p)
-        reduce(q)
+        broadcast(p, 0)
+        broadcast(q, 0)
     accept_draft_prob = torch.minimum(torch.ones(()), q[:speculate_k]/ p)
     rand_vals = torch.rand_like(accept_draft_prob)
     if is_dist_initialized():
@@ -292,6 +292,7 @@ def calculate_sequence_lengths(
     interactive: bool,
     model_block_size: int,
     cross_attention_mask: Optional[torch.Tensor] = None,
+    draft_cross_attention_mask: Optional[torch.Tensor] = None,
     max_seq_length: Optional[int] = None,
     draft_max_seq_length: Optional[int] = None
 ) -> dict:
@@ -363,8 +364,10 @@ def calculate_sequence_lengths(
                                     draft_encoded.size(-1) if draft_encoded is not None else 
                                      input_embed_length
         )
-        max_draft_seq_length = draft_input_embed_length + speculate_k + 1 + max_new_tokens 
-
+        draft_embed_seq_length = draft_input_embed_length + speculate_k + 1 + max_new_tokens 
+    else:
+        draft_input_embed_length = None
+        draft_embed_seq_length = None 
     
     # Verify text-only models have matching lengths
     if not multimodal:
@@ -377,7 +380,7 @@ def calculate_sequence_lengths(
         "embed_seq_length": embed_seq_length,
         "max_seq_length": max_seq_length if max_seq_length is not None else embed_seq_length,
         "draft_input_embed_length": draft_input_embed_length,
-        "draft_max_seq_length": draft_max_seq_length if draft_max_seq_length is not None else max_draft_seq_length
+        "draft_max_seq_length": draft_max_seq_length if draft_max_seq_length is not None else draft_embed_seq_length
     }
 
 @torch.no_grad()
@@ -402,7 +405,6 @@ def generate(
     """
     Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
     """
-    print('embeded shape: ', embedded.shape)
     is_speculative = draft_model is not None
     multimodal = embedded is not None
     draft_multimodal = draft_embedded is not None
@@ -421,8 +423,8 @@ def generate(
         is_speculative=is_speculative,
         interactive=interactive,
         model_block_size=model.config.block_size,
-        cross_attention_mask=model.cross_attention_mask
-        draft_cross_attention_mask=model.draft_cross_attention_mask
+        cross_attention_mask=model.cross_attention_mask,
+        draft_cross_attention_mask=draft_model.cross_attention_mask if draft_model is not None else None,
         max_seq_length=max_seq_length,
         draft_max_seq_length=draft_max_seq_length
     )
@@ -441,7 +443,8 @@ def generate(
     seq[:, :lengths["input_text_length"]] = prompt
     
     input_pos = torch.arange(0, lengths["input_embed_length"], device=device)
-    draft_input_pos = torch.arange(0, lengths["draft_input_embed_length"], device=device)
+    if is_speculative:
+        draft_input_pos = torch.arange(0, lengths["draft_input_embed_length"], device=device)
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)

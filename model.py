@@ -4,7 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Union, Dict
 
 import torch
@@ -36,7 +36,7 @@ class ModelArgs:
     rope_scaling: Optional[dict] = None
     wqkv_bias: Optional[bool] = False
     mm_config: Optional[MultimodalModelArgs] = None
-    cross_attention_layers: Optional[list] = None
+    cross_attention_layers: Optional[list] = field(default_factory=list) 
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -205,14 +205,14 @@ class Transformer(nn.Module):
         self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
 
     def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None, cross_states: Optional[Tensor] = None, 
-                embedded: bool = False) -> Tensor:
+                embedded: Optional[Tensor] = None) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
         causal_mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
-        if not embedded:
+        if embedded is None:
             x = self.tok_embeddings(idx)
         else:
-            x = idx
+            x = embedded
 
         # Pass both freqs_cis and cross_states to all layers
         # Each block type will only use what it needs
