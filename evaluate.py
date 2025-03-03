@@ -286,11 +286,14 @@ def calculate_sequence_lengths(
     max_new_tokens: int,
     embedded: Optional[torch.Tensor],
     draft_encoded: Optional[torch.Tensor],
+    draft_embedded: Optional[torch.Tensor],
     speculate_k: Optional[int],
     is_speculative: bool,
     interactive: bool,
     model_block_size: int,
     cross_attention_mask: Optional[torch.Tensor] = None,
+    max_seq_length: Optional[int] = None,
+    draft_max_seq_length: Optional[int] = None
 ) -> dict:
     """Calculate various sequence lengths needed for generation.
     
@@ -302,11 +305,15 @@ def calculate_sequence_lengths(
             - [B, L, E] tensor: Direct token embeddings
             - [P, L, E] tensor: Cross-attention states where P is patch size
         draft_encoded: Optional encoded tensor for text-only draft models
+        draft_embedded: similar to embedded for the draft
         speculate_k: Number of tokens to speculate (if using speculative decoding)
         is_speculative: Whether using speculative decoding
         interactive: Whether in interactive mode
         model_block_size: Maximum sequence length supported by model
         cross_attention_mask: Optional cross attention mask to determine if using cross attention
+        draft_cross_attention_mask: Optional draft cross attention mask to determine if using cross attention in draft
+        max_seq_length: Optional number for entire sequence length generation to avoid recompilation
+        draft_max_seq_length: Optional number for entire draft sequence length generation to avoid recompilation
     
     Returns:
         Dictionary containing calculated lengths:
@@ -315,7 +322,6 @@ def calculate_sequence_lengths(
         - text_seq_length: Total text sequence length
         - embed_seq_length: Total embedding sequence length
         - draft_text_seq_length: Sequence length for draft model
-        - is_cross_attention: Whether using cross attention states
     """
     input_text_length = prompt.size(-1)
     
@@ -352,11 +358,13 @@ def calculate_sequence_lengths(
         text_seq_length += speculate_k + 1
         
     # Calculate draft model sequence length if needed
-    draft_text_seq_length = (
-        draft_encoded.size(-1) + speculate_k + 1 + max_new_tokens 
-        if draft_encoded is not None 
-        else text_seq_length
-    )
+    if is_speculative:
+        draft_input_embed_length = (draft_embedded.size(-2) if (draft_embedded is not None and draft_cross_attention_mask is None) else 
+                                    draft_encoded.size(-1) if draft_encoded is not None else 
+                                     input_embed_length
+        )
+        max_draft_seq_length = draft_input_embed_length + speculate_k + 1 + max_new_tokens 
+
     
     # Verify text-only models have matching lengths
     if not multimodal:
@@ -367,8 +375,9 @@ def calculate_sequence_lengths(
         "input_embed_length": input_embed_length,
         "text_seq_length": text_seq_length,
         "embed_seq_length": embed_seq_length,
-        "draft_text_seq_length": draft_text_seq_length,
-        "is_cross_attention": is_cross_attention
+        "max_seq_length": max_seq_length if max_seq_length is not None else embed_seq_length,
+        "draft_input_embed_length": draft_input_embed_length,
+        "draft_max_seq_length": draft_max_seq_length if draft_max_seq_length is not None else max_draft_seq_length
     }
 
 @torch.no_grad()
@@ -407,23 +416,24 @@ def generate(
         max_new_tokens=max_new_tokens,
         embedded=embedded,
         draft_encoded=draft_encoded,
+        draft_embedded=draft_embedded,
         speculate_k=speculate_k,
         is_speculative=is_speculative,
         interactive=interactive,
         model_block_size=model.config.block_size,
         cross_attention_mask=model.cross_attention_mask
+        draft_cross_attention_mask=model.draft_cross_attention_mask
+        max_seq_length=max_seq_length,
+        draft_max_seq_length=draft_max_seq_length
     )
     
     device, dtype = prompt.device, prompt.dtype
     
     # Setup model caches
     with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["embed_seq_length"], prompt=prompt)
+        model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["max_seq_length"], prompt=prompt)
         if is_speculative and draft_model is not model:
-            if draft_embedded is not None:
-                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["embed_seq_length"], prompt=prompt)
-            else:
-                draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["draft_text_seq_length"], prompt=prompt)
+            draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["draft_max_seq_length"], prompt=prompt)
 
     # Initialize sequence tensor
     seq = torch.empty(batch_size, lengths["text_seq_length"], dtype=dtype, device=device)
@@ -431,7 +441,7 @@ def generate(
     seq[:, :lengths["input_text_length"]] = prompt
     
     input_pos = torch.arange(0, lengths["input_embed_length"], device=device)
-    draft_input_pos = torch.arange(0, draft_encoded.size(-1), device=device) if draft_encoded is not None else input_pos
+    draft_input_pos = torch.arange(0, lengths["draft_input_embed_length"], device=device)
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
@@ -454,7 +464,7 @@ def generate(
 
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
-        draft_input_pos = draft_embedded.size(-2) if draft_embedded is not None else draft_encoded.size(-1) if draft_encoded is not None else input_pos
+        draft_input_pos = lengths["draft_input_embed_length"]
         max_pos = lengths["embed_seq_length"] - 1 - (speculate_k + 1)
         while input_pos < max_pos:
             cur_token = next_token.view(())
