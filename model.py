@@ -105,10 +105,10 @@ transformer_configs = {
     "llava-onevision-qwen2-72b-si":dict(block_size=131072, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=29568, vocab_size=152064,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("llava-onevision-qwen2-72b-si")
     ),
-
     "llama-3.2-11b-vision-instruct": dict(block_size=131072, n_layer=40, n_head=32, n_local_heads=8, dim=4096, intermediate_size=14336, vocab_size=128256, rope_base=500000,
         rope_scaling=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_position_embeddings=8192), cross_attention_layers=[3,8,13,18,23,28,33,38],
         mm_config=MultimodalModelArgs.from_name("llama-3.2-11b-vision-instruct")
+    ),
     "Qwen2.5-VL-3B-Instruct":dict(block_size=32768, n_layer=36, n_head=16, n_local_heads=2, dim=2048, intermediate_size=11008, vocab_size=151936,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-3B-Instruct")
     ),
@@ -167,8 +167,10 @@ class Transformer(nn.Module):
         self.max_seq_length = -1
         self.cross_attention_mask = None
         self.cross_attention_mask_out = None
-        self.mrope=getattr(config.mm_config, "mrope", False)
-        self.image_grid_thw=None
+        self.mrope = False
+        if hasattr(config, 'mm_config'):
+            self.mrope = getattr(config.mm_config, "mrope", False)
+            self.image_grid_thw=None
 
     def setup_caches(self, max_batch_size, max_seq_length, prompt):
         if not self.mrope and self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:

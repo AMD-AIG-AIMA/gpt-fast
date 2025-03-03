@@ -649,10 +649,9 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                             prompt=prompt, tokenizer=tokenizer, images=images,
                             embed_tokens=model.tok_embeddings, 
                         )
-                       if isinstance(encoded, BatchFeature):
+                        if isinstance(encoded, BatchFeature):
                           if 'image_grid_thw' in encoded:
                               model.image_grid_thw = encoded['image_grid_thw']
-                              model.mrope=True
                           encoded = encoded['input_ids']
                         model.cross_attention_mask = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)
                         model.cross_attention_mask_out = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
@@ -688,7 +687,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                     do_block_verify=do_block_verify,
                     embedded=embedded,
                     draft_encoded=draft_encoded,
-                    draft_embedded=draft_embedded
+                    draft_embedded=draft_embedded,
                     max_seq_length = max_seq_length,
                     draft_max_seq_length = draft_max_seq_length,
                 )
@@ -734,10 +733,10 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
               'draft_model': eval_info.get('draft_model', ''),
               'benchmark': eval_info.get('branch_name', ''),
               'speculative k': eval_info.get('speculate_k', ''),
-              'compile': eval_inf.get('compile', ''),
-              'compile_prefill': eval_inf.get('compile_prefill', ''),
-              'temperature': eval_inf.get('temperature', ''),
-              'top_k': eval_inf.get('top_k', ''),
+              'compile': eval_info.get('compile', ''),
+              'compile_prefill': eval_info.get('compile_prefill', ''),
+              'temperature': eval_info.get('temperature', ''),
+              'top_k': eval_info.get('top_k', ''),
             })
     return results
 
