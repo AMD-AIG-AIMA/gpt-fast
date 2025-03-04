@@ -191,8 +191,16 @@ class LlamaMultimodalModelArgs(MultimodalModelArgs,MllamaConfig):
     text_config = Config(initializer_range=0.02)
     vision_config = Config()
     max_aspect_ratio_id = 8
-    text_hidden_size=4096
+    text_hidden_size: Optional[int]=4096
     _attn_implementation_internal = None
+
+    def __post_init__(self):
+        # Extract all valid MllamaConfig arguments
+        valid_keys = set(MllamaConfig.__annotations__.keys())
+        llama_config_args = {k: v for k, v in self.__dict__.items() if k in valid_keys}
+
+        # Initialize MllamaConfig explicitly with filtered arguments
+        MllamaConfig.__init__(self, **llama_config_args)
     
 
 
@@ -329,6 +337,13 @@ mm_transformer_config = {
           hidden_act="gelu",
           hidden_size=1280,
           image_size=560,
+      ),
+      "llama-3.2-90b-vision-instruct": dict(
+          attention_heads=16,
+          hidden_act="gelu",
+          hidden_size=1280,
+          image_size=560,
+          text_hidden_size=8192,
       ),
 }
   

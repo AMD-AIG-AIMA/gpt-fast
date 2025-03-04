@@ -258,12 +258,13 @@ class LlamaVisionModule(VisionModule):
           device: Optional[Union[str, torch.device]] = None):
         super().__init__(config, dtype, device)
         from transformers import MllamaVisionModel, MllamaProcessor
-        self.vision_model = MllamaVisionModel._from_config(config)
+        self.vision_model = MllamaVisionModel._from_config(config).to(dtype=dtype, device=device)
         # self.vision_model = MllamaVisionModel.from_pretrained(str(checkpoint_path.parent))
         self.multi_modal_projector = nn.Linear(
             config.vision_output_dim,
             config.text_hidden_size,
             bias=True,
+            dtype=dtype, device=device
         )
         
         self.processor = MllamaProcessor.from_pretrained(str(checkpoint_path.parent))

@@ -109,6 +109,11 @@ transformer_configs = {
         rope_scaling=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_position_embeddings=8192), cross_attention_layers=[3,8,13,18,23,28,33,38],
         mm_config=MultimodalModelArgs.from_name("llama-3.2-11b-vision-instruct")
     ),
+    "llama-3.2-90b-vision-instruct": dict(block_size=131072, n_layer=100, n_head=64, n_local_heads=8, dim=8192, intermediate_size=28672, vocab_size=128256, rope_base=500000,
+        rope_scaling=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_position_embeddings=8192), 
+        cross_attention_layers=[3,8,13,18,23,28,33,38,43,48,53,58,63,68,73,78,83,88,93,98],
+        mm_config=MultimodalModelArgs.from_name("llama-3.2-90b-vision-instruct")
+    ),
     "Qwen2.5-VL-3B-Instruct":dict(block_size=32768, n_layer=36, n_head=16, n_local_heads=2, dim=2048, intermediate_size=11008, vocab_size=151936,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-3B-Instruct")
     ),
