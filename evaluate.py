@@ -437,7 +437,6 @@ def generate(
     
     device, dtype = prompt.device, prompt.dtype
     # Setup model caches
-    print(lengths["cross_attention_seq_length"])
     with torch.device(device):
         model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["max_seq_length"], prompt=prompt,
                            cross_attention_seq_length=lengths["cross_attention_seq_length"])
@@ -634,6 +633,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
         draft_vision_modules: Optional draft vision modules
         max_seq_length: Maximum sequence length used for KVCache
         draft_max_seq_length: Maximum sequence length used for draft KVCache
+        cross_attention_seq_length: Maximum sequence length used for KV-cache of cross_attention modules
         collect_metrics: Whether to collect and return metrics
         eval_info: Evaluation information to be saved with the log
         
