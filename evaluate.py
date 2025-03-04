@@ -869,7 +869,7 @@ def main(
         questions, model, tokenizer, conv, system_message,
         max_new_tokens, temperature, top_k, draft_model, speculate_k,
         do_block_verify, device, multimodal, vision_modules, draft_vision_modules,
-        collect_metrics=True, eval_info=eval_info
+        max_seq_length, draft_max_seq_length, collect_metrics=True, eval_info=eval_info
     )
 
     if rank == 0 or rank is None:
