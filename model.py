@@ -170,6 +170,7 @@ class Transformer(nn.Module):
         self.mask_cache: Optional[Tensor] = None
         self.max_batch_size = -1
         self.max_seq_length = -1
+        self.cross_attention_seq_length = -1
         self.cross_attention_mask = None
         self.cross_attention_mask_out = None
         self.mrope = False
@@ -177,8 +178,8 @@ class Transformer(nn.Module):
             self.mrope = getattr(config.mm_config, "mrope", False)
             self.image_grid_thw=None
 
-    def setup_caches(self, max_batch_size, max_seq_length, prompt):
-        if not self.mrope and self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
+    def setup_caches(self, max_batch_size, max_seq_length, prompt, cross_attention_seq_length=None):
+        if not self.mrope and self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size and (self.cross_attention_seq_length >= cross_attention_seq_length if cross_attention_seq_length is not None else True):
             return
         if self.mrope:
             position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=getattr(self,'image_grid_thw', None), mm_config=self.config.mm_config)
@@ -188,6 +189,8 @@ class Transformer(nn.Module):
         max_seq_length = find_multiple(max_seq_length, 8)
         self.max_seq_length = max_seq_length
         self.max_batch_size = max_batch_size
+        if cross_attention_seq_length:
+            self.cross_attention_seq_length = cross_attention_seq_length
         dtype = self.output.weight.dtype
         # For quantized layers, dtype is encoded in scales
         if hasattr(self.output, "scales"):
@@ -198,7 +201,7 @@ class Transformer(nn.Module):
             if hasattr(b,'attention'):
                 b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
             if hasattr(b,'cross_attention'):
-                b.cross_attention.kv_cache = KVCache(max_batch_size, 10000, self.config.n_local_heads, head_dim, dtype)
+                b.cross_attention.kv_cache = KVCache(max_batch_size, cross_attention_seq_length, self.config.n_local_heads, head_dim, dtype)
         if self.mrope:
             if position_ids is None:
                 raise ValueError('Multimodal Rope requires the position id')
@@ -482,7 +485,9 @@ class CrossAttention(nn.Module):
 
         # Normalize key states
         k = self.k_norm(k)
-
+        # print(
+        #     f"q shape: {q.shape}, k shape: {k.shape}, v shape: {v.shape}, mask shape: {mask.shape}, input_pos shape: {input_pos.shape}"
+        # )
         # Compute attention
         y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
 
