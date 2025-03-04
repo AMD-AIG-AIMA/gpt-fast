@@ -21,7 +21,7 @@ torch._logging.set_logs(graph_breaks=True, recompiles=True)
 
 from time_profiler import TimeProfiler
 from transformers import BatchFeature  
-TimeProfiler.set_warm_up(0)
+TimeProfiler.set_warm_up(5)
 torch._logging.set_logs(graph_breaks=True, recompiles=True)
 import ast 
 
@@ -294,7 +294,8 @@ def calculate_sequence_lengths(
     cross_attention_mask: Optional[torch.Tensor] = None,
     draft_cross_attention_mask: Optional[torch.Tensor] = None,
     max_seq_length: Optional[int] = None,
-    draft_max_seq_length: Optional[int] = None
+    draft_max_seq_length: Optional[int] = None,
+    cross_attention_seq_length: Optional[int] = None,
 ) -> dict:
     """Calculate various sequence lengths needed for generation.
     
@@ -315,6 +316,7 @@ def calculate_sequence_lengths(
         draft_cross_attention_mask: Optional draft cross attention mask to determine if using cross attention in draft
         max_seq_length: Optional number for entire sequence length generation to avoid recompilation
         draft_max_seq_length: Optional number for entire draft sequence length generation to avoid recompilation
+        cross_attention_seq_length: Optional number for cross attention sequence length to avoid recompilation
     
     Returns:
         Dictionary containing calculated lengths:
@@ -380,7 +382,8 @@ def calculate_sequence_lengths(
         "embed_seq_length": embed_seq_length,
         "max_seq_length": max_seq_length if max_seq_length is not None else embed_seq_length,
         "draft_input_embed_length": draft_input_embed_length,
-        "draft_max_seq_length": draft_max_seq_length if draft_max_seq_length is not None else draft_embed_seq_length
+        "draft_max_seq_length": draft_max_seq_length if draft_max_seq_length is not None else draft_embed_seq_length,
+        "cross_attention_seq_length": cross_attention_seq_length if cross_attention_seq_length is not None else cross_attention_mask.shape[-1] if cross_attention_mask is not None else None,
     }
 
 @torch.no_grad()
@@ -400,6 +403,7 @@ def generate(
     draft_embedded: Optional[torch.Tensor] = None,
     max_seq_length: Optional[int] = None,
     draft_max_seq_length: Optional[int] = None,
+    cross_attention_seq_length: Optional[int] = None,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
@@ -426,16 +430,19 @@ def generate(
         cross_attention_mask=model.cross_attention_mask,
         draft_cross_attention_mask=draft_model.cross_attention_mask if draft_model is not None else None,
         max_seq_length=max_seq_length,
-        draft_max_seq_length=draft_max_seq_length
+        draft_max_seq_length=draft_max_seq_length,
+        cross_attention_seq_length=cross_attention_seq_length,
+        
     )
     
     device, dtype = prompt.device, prompt.dtype
-    
     # Setup model caches
     with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["max_seq_length"], prompt=prompt)
+        model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["max_seq_length"], prompt=prompt,
+                           cross_attention_seq_length=lengths["cross_attention_seq_length"])
         if is_speculative and draft_model is not model:
-            draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["draft_max_seq_length"], prompt=prompt)
+            draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["draft_max_seq_length"], prompt=prompt,
+                                     cross_attention_seq_length=lengths["cross_attention_seq_length"])
 
     # Initialize sequence tensor
     seq = torch.empty(batch_size, lengths["text_seq_length"], dtype=dtype, device=device)
@@ -605,7 +612,7 @@ def _get_model_size(model):
 
 def process_questions(questions, model, tokenizer, conv, system_message, max_new_tokens, temperature, top_k,
                      draft_model, speculate_k, do_block_verify, device, multimodal=False, vision_modules=None,
-                     draft_vision_modules=None, max_seq_length=None, draft_max_seq_length=None,
+                     draft_vision_modules=None, max_seq_length=None, draft_max_seq_length=None, cross_attention_seq_length=None,
                      collect_metrics=False, eval_info={}):
     """Process a list of questions through the model and return results.
     
@@ -626,6 +633,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
         draft_vision_modules: Optional draft vision modules
         max_seq_length: Maximum sequence length used for KVCache
         draft_max_seq_length: Maximum sequence length used for draft KVCache
+        cross_attention_seq_length: Maximum sequence length used for KV-cache of cross_attention modules
         collect_metrics: Whether to collect and return metrics
         eval_info: Evaluation information to be saved with the log
         
@@ -703,6 +711,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                     draft_embedded=draft_embedded,
                     max_seq_length = max_seq_length,
                     draft_max_seq_length = draft_max_seq_length,
+                    cross_attention_seq_length=cross_attention_seq_length,
                 )
             end_time = time.time()
             
@@ -768,7 +777,8 @@ def main(
     warmup: int = 5,
     do_block_verify: bool = False,
     max_seq_length: int = None,
-    draft_max_seq_length: int = None
+    draft_max_seq_length: int = None,
+    cross_attention_seq_length: int = None,
 ):
     global print
     # Initialize distributed setup
@@ -847,7 +857,7 @@ def main(
         questions[:warmup], model, tokenizer, conv, system_message,
         max_new_tokens, temperature, top_k, draft_model, speculate_k,
         do_block_verify, device,multimodal, vision_modules, draft_vision_modules,
-        max_seq_length, draft_max_seq_length, collect_metrics=False
+        max_seq_length, draft_max_seq_length, cross_attention_seq_length, collect_metrics=False
     )
 
     if num_questions is not None:
@@ -869,7 +879,7 @@ def main(
         questions, model, tokenizer, conv, system_message,
         max_new_tokens, temperature, top_k, draft_model, speculate_k,
         do_block_verify, device, multimodal, vision_modules, draft_vision_modules,
-        max_seq_length, draft_max_seq_length, collect_metrics=True, eval_info=eval_info
+        max_seq_length, draft_max_seq_length, cross_attention_seq_length, collect_metrics=True, eval_info=eval_info
     )
 
     if rank == 0 or rank is None:
@@ -918,9 +928,11 @@ if __name__ == '__main__':
     parser.add_argument("--random_seed", default=None, type=int, help="Random seed")
     parser.add_argument("--max_seq_length", default=None, type=int, help="Maximum sequence length for the model")
     parser.add_argument("--draft_max_seq_length", default=None, type=int, help="Maximum sequence length for the draft model")
+    parser.add_argument("--cross_attention_seq_length", default=None, type=int, help="Maximum cross_attention sequence length for models with cross_attention")
+    
     args = parser.parse_args()
     if args.random_seed:
         torch.manual_seed(args.random_seed)
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
          args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
-         args.warmup, args.do_block_verify, args.max_seq_length, args.draft_max_seq_length)
+         args.warmup, args.do_block_verify, args.max_seq_length, args.draft_max_seq_length, args.cross_attention_seq_length)
