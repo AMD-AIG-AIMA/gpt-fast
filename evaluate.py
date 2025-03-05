@@ -461,7 +461,7 @@ def generate(
             next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
         if is_speculative:
             if draft_multimodal:
-                prefill(draft_model, prompt.view(batch_size, -1), input_pos, embedded, **sampling_kwargs)
+                prefill(draft_model, prompt.view(batch_size, -1), input_pos, draft_embedded, **sampling_kwargs)
             elif multimodal:
                 # Target multimodal, draft text only
                 prefill(draft_model, draft_encoded.view(batch_size, -1), draft_input_pos, **sampling_kwargs)
@@ -817,7 +817,7 @@ def main(
         draft_model.requires_grad_(False) 
         draft_multimodal =  getattr(draft_model.config, "mm_config", None) is not None
         if draft_multimodal:
-            draft_vision_checkpoints = str(draft_checkpoint_path.parent / "vision_modules.pth")
+            draft_vision_checkpoints = draft_checkpoint_path.parent / "vision_modules.pth"
             draft_vision_modules = VisionModule.from_name(draft_checkpoint_path.parent.name, 
                                                         config=draft_model.config.mm_config, 
                                                         checkpoint_path=draft_vision_checkpoints,
