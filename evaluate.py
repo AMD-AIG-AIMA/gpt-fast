@@ -840,7 +840,7 @@ def main(
             model_forward = torch.compile(model_forward, mode="max-autotune", fullgraph=True)
 
         global decode_one_token, prefill
-        decode_one_token = torch.compile(decode_one_token, mode="reduce-overhead", fullgraph=True)
+        decode_one_token = torch.compile(decode_one_token, mode="max-autotune", fullgraph=True)
 
         if compile_prefill:
             prefill = torch.compile(prefill, fullgraph=True, dynamic=True)

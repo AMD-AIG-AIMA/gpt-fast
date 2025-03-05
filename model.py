@@ -471,14 +471,14 @@ class CrossAttention(nn.Module):
             v = v.view(bsz, -1, self.n_local_heads, self.head_dim).transpose(1, 2)
             
             # Update cache if using incremental decoding
-            self.cache_size = torch.arange(k.shape[2], device=k.device)
+            cache_size = torch.arange(k.shape[2], device=k.device)
             if self.kv_cache is not None:
-                k, v = self.kv_cache.update(self.cache_size, k, v)
+                k, v = self.kv_cache.update(cache_size, k, v)
         else:
             # During decoding (after prefill), use cached key/values
             k, v = self.kv_cache.k_cache, self.kv_cache.v_cache
-
-        k,v = k[:,:,:len(self.cache_size),:], v[:,:,:len(self.cache_size),:]
+        cache_size = mask.shape[-1]
+        k,v = k[:,:,:cache_size,:], v[:,:,:cache_size,:]
         # Repeat KV heads if necessary
         k = k.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
         v = v.repeat_interleave(self.n_head // self.n_local_heads, dim=1)
