@@ -151,7 +151,7 @@ def model_forward(model, x, input_pos):
 
 def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
-    draft_probs = torch.stack(draft_probs)
+    draft_probs = torch.stack(draft_probs).to(device)
     if len(draft_probs.shape) > 2:
         draft_probs = draft_probs.squeeze(1)
 
@@ -193,7 +193,7 @@ def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, 
 
 def token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
-    draft_probs = torch.stack(draft_probs)
+    draft_probs = torch.stack(draft_probs).to(device)
     # q: target prob, p: draft prob
     # q >= p: always accept draft token
     # q < p: q/p prob to accept draft token
@@ -239,22 +239,26 @@ def speculative_decode(
     **sampling_kwargs
 ) -> torch.Tensor:
     device = cur_token.device
+    draft_device = next(draft_model.parameters()).device  # Get draft model's device
     if draf_input_pos is None:
         draf_input_pos = input_pos
-    orig_input_pos = torch.tensor([draf_input_pos], dtype=torch.int64, device=device)
+    orig_input_pos = torch.tensor([draf_input_pos], dtype=torch.int64, device=draft_device)
     # Get draft tokens and probabilities
     with TimeProfiler("Speculate Decode", model_size=model_size(draft_model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(speculate_k)
         draft_tokens, draft_probs = decode_n_tokens(
             draft_model, 
-            cur_token.view(1, -1), 
+            cur_token.view(1, -1).to(draft_device), 
             orig_input_pos.clone(), 
             speculate_k,
             **sampling_kwargs
         )
-    draft_tokens = torch.cat(draft_tokens)
+    
+    # Move draft outputs to target model device
+    draft_tokens = torch.cat(draft_tokens).to(device)
     if len(draft_tokens.shape) > 1:
         draft_tokens = draft_tokens.view(-1)
+    
     # parallel inference on target model using draft tokens
     with TimeProfiler("Verification", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
@@ -276,7 +280,7 @@ def speculative_decode(
     if verified_tokens.shape[0] == speculate_k + 1:
         model_forward(
                 draft_model,
-                draft_tokens[-1].view(1, -1),
+                draft_tokens[-1].view(1, -1).to(draft_device),
                 orig_input_pos + speculate_k,
         )
     return verified_tokens
@@ -770,6 +774,7 @@ def main(
     top_k: int = 200,
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     draft_checkpoint_path: Optional[Path] = None,
+    draft_device: Optional[str] = None,
     speculate_k: int = 5,
     compile: bool = False,
     compile_prefill: bool = False,
@@ -812,18 +817,27 @@ def main(
         vision_modules = None
 
     if is_speculative:
-        print(f"Loading draft model from {draft_checkpoint_path}")
-        draft_model = _load_model(draft_checkpoint_path, device, precision, use_tp=False)
+        # Use specified draft device or default to main device
+        draft_device_actual = draft_device if draft_device is not None else device
+        print(f"Loading draft model from {draft_checkpoint_path} on {draft_device_actual}")
+        draft_model = _load_model(draft_checkpoint_path, draft_device_actual, precision, use_tp=False)
         draft_model.requires_grad_(False) 
-        draft_multimodal =  getattr(draft_model.config, "mm_config", None) is not None
+        draft_multimodal = getattr(draft_model.config, "mm_config", None) is not None
         if draft_multimodal:
+            # Set temporary default device for vision modules loading
+            if device != draft_device_actual:
+                torch.set_default_device(draft_device_actual)
             draft_vision_checkpoints = draft_checkpoint_path.parent / "vision_modules.pth"
             draft_vision_modules = VisionModule.from_name(draft_checkpoint_path.parent.name, 
                                                         config=draft_model.config.mm_config, 
                                                         checkpoint_path=draft_vision_checkpoints,
                                                         dtype=precision,
-                                                        device=device)
+                                                        device=draft_device_actual)
             draft_vision_modules.eval_mode()
+            
+            # Restore original default device
+            if device != draft_device_actual:
+                torch.set_default_device(device)
         else:
             draft_vision_modules = None
     else:
@@ -919,6 +933,7 @@ if __name__ == '__main__':
     parser.add_argument('--top_k', type=int, default=1, help='Top-k for sampling')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation')
     parser.add_argument('--draft_checkpoint_path', type=Path, default=None, help='Path to the draft model checkpoint for speculative decoding')
+    parser.add_argument('--draft_device', type=str, default=None, help='Device to use for draft model (defaults to same as target model)')
     parser.add_argument('--speculate_k', type=int, default=5, help='Speculative execution depth')
     parser.add_argument('--compile', action='store_true', help='Whether to compile the model')
     parser.add_argument('--compile_prefill', action='store_true', help='Whether to compile the prefill')
@@ -934,5 +949,5 @@ if __name__ == '__main__':
     if args.random_seed:
         torch.manual_seed(args.random_seed)
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
-         args.draft_checkpoint_path, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
+         args.draft_checkpoint_path, args.draft_device, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
          args.warmup, args.do_block_verify, args.max_seq_length, args.draft_max_seq_length, args.cross_attention_seq_length)
