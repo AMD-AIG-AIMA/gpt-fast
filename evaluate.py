@@ -147,7 +147,9 @@ def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torc
 
 def model_forward(model, x, input_pos):
     return model(x, input_pos)
-    # TODO: Add seperate model_forward for draft model to prevent recompilation
+
+def draft_model_forward(model, x, input_pos):
+    return model(x, input_pos)
 
 def block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
@@ -239,7 +241,7 @@ def speculative_decode(
     **sampling_kwargs
 ) -> torch.Tensor:
     device = cur_token.device
-    draft_device = draft_model.device  # Get draft model's device
+    draft_device = draft_model._device  # Get draft model's device
     if draf_input_pos is None:
         draf_input_pos = input_pos
     orig_input_pos = torch.tensor([draf_input_pos], dtype=torch.int64, device=draft_device)
@@ -278,7 +280,7 @@ def speculative_decode(
     
     # fill last token into draft model if all speculative tokens have been accepted
     if verified_tokens.shape[0] == speculate_k + 1:
-        model_forward(
+        draft_model_forward(
                 draft_model,
                 draft_tokens[-1].view(1, -1).to(draft_device),
                 orig_input_pos + speculate_k,
@@ -455,7 +457,7 @@ def generate(
     
     input_pos = torch.arange(0, lengths["input_embed_length"], device=device)
     if is_speculative:
-        draft_input_pos = torch.arange(0, lengths["draft_input_embed_length"], device=draft_model.device)
+        draft_input_pos = torch.arange(0, lengths["draft_input_embed_length"], device=draft_model._device)
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
@@ -465,14 +467,15 @@ def generate(
             next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
         if is_speculative:
             if draft_multimodal:
-                prefill(draft_model, prompt.view(batch_size, -1).to(draft_model.device),
-                        input_pos.to(draft_model.device), draft_embedded, **sampling_kwargs)
+                draft_device = draft_model._device
+                prefill(draft_model, prompt.view(batch_size, -1).to(draft_device),
+                        input_pos.to(draft_device), draft_embedded, **sampling_kwargs)
             elif multimodal:
                 # Target multimodal, draft text only
                 prefill(draft_model, draft_encoded.view(batch_size, -1), draft_input_pos, **sampling_kwargs)
             else:
-                prefill(draft_model, prompt.view(batch_size, -1).to(draft_model.device),
-                        input_pos.to(draft_model.device), **sampling_kwargs)
+                prefill(draft_model, prompt.view(batch_size, -1).to(draft_device),
+                        input_pos.to(draft_device), **sampling_kwargs)
     seq[:, lengths["input_text_length"]] = next_token.squeeze()
     input_pos = torch.tensor([lengths["input_embed_length"]], device=device, dtype=torch.int)
     
@@ -692,7 +695,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                             draft_model.cross_attention_mask_out = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
                         elif is_speculative and not draft_multimodal:
                             # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
-                            draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
+                            draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=draft_model._device)
                             draft_embedded = None
                         else:
                             draft_encoded, draft_embedded = None, None
@@ -805,7 +808,7 @@ def main(
     model = _load_model(checkpoint_path, device, precision, use_tp)
     model.requires_grad_(False) 
     multimodal = getattr(model.config, "mm_config", None) is not None
-    model.device = device
+    model._device = device
     if multimodal:
         torch.set_default_dtype(precision)
         torch.set_default_device(device)
@@ -826,7 +829,7 @@ def main(
         draft_model = _load_model(draft_checkpoint_path, draft_device, precision, use_tp=False)
         draft_model.requires_grad_(False) 
         draft_multimodal = getattr(draft_model.config, "mm_config", None) is not None
-        draft_model.device = draft_device
+        draft_model._device = draft_device
         if draft_multimodal:
             # Set temporary default device for vision modules loading
             if device != draft_device:
@@ -854,8 +857,9 @@ def main(
     
     if compile:
         if is_speculative:
-            global model_forward, logits_to_probs
+            global model_forward, logits_to_probs, draft_model_forward
             model_forward = torch.compile(model_forward, mode="max-autotune", fullgraph=True)
+            draft_model_forward = torch.compile(draft_model_forward, mode="max-autotune", fullgraph=True)
 
         global decode_one_token, prefill
         decode_one_token = torch.compile(decode_one_token, mode="max-autotune", fullgraph=True)

@@ -132,11 +132,11 @@ transformer_configs = {
 }
 
 class KVCache(nn.Module):
-    def __init__(self, max_batch_size, max_seq_length, n_heads, head_dim, dtype=torch.bfloat16):
+    def __init__(self, max_batch_size, max_seq_length, n_heads, head_dim, device, dtype=torch.bfloat16):
         super().__init__()
         cache_shape = (max_batch_size, n_heads, max_seq_length, head_dim)
-        self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype))
-        self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype))
+        self.register_buffer('k_cache', torch.zeros(cache_shape, dtype=dtype, device=device))
+        self.register_buffer('v_cache', torch.zeros(cache_shape, dtype=dtype, device=device))
 
     def update(self, input_pos, k_val, v_val):
         # input_pos: [S], k_val: [B, H, S, D]
@@ -174,9 +174,11 @@ class Transformer(nn.Module):
         self.cross_attention_mask = None
         self.cross_attention_mask_out = None
         self.mrope = False
+        self._device=next(self.layers[0].parameters()).device
         if hasattr(config, 'mm_config'):
             self.mrope = getattr(config.mm_config, "mrope", False)
             self.image_grid_thw=None
+        
 
     def setup_caches(self, max_batch_size, max_seq_length, prompt, cross_attention_seq_length=None):
         if not self.mrope and self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size and (self.cross_attention_seq_length >= cross_attention_seq_length if cross_attention_seq_length is not None else True):
@@ -199,18 +201,19 @@ class Transformer(nn.Module):
             dtype = self.output.scales_and_zeros.dtype
         for b in self.layers:
             if hasattr(b,'attention'):
-                b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
+                b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, self._device, dtype)
             if hasattr(b,'cross_attention'):
-                b.cross_attention.kv_cache = KVCache(max_batch_size, cross_attention_seq_length, self.config.n_local_heads, head_dim, dtype)
+                b.cross_attention.kv_cache = KVCache(max_batch_size, cross_attention_seq_length, 
+                                                     self.config.n_local_heads, head_dim, self._device, dtype)
         if self.mrope:
             if position_ids is None:
                 raise ValueError('Multimodal Rope requires the position id')
             self.freqs_cis = precompute_freqs_cis_for_qwen2_5(self.config.block_size, self.config.dim // self.config.n_head, 
-                                                              position_ids, self.config.rope_base, dtype, self.config.rope_scaling)
+                                                              position_ids, self.config.rope_base, dtype, self.config.rope_scaling).to(self._device)
         else:
             self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head,
-                                                  self.config.rope_base, dtype, self.config.rope_scaling)
-        self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool))
+                                                  self.config.rope_base, dtype, self.config.rope_scaling).to(self._device)
+        self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool, device=self._device))
 
     def forward(self, idx: Tensor, input_pos: Optional[Tensor] = None, cross_states: Optional[Tensor] = None, 
                 embedded: Optional[Tensor] = None) -> Tensor:
