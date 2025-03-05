@@ -239,7 +239,7 @@ def speculative_decode(
     **sampling_kwargs
 ) -> torch.Tensor:
     device = cur_token.device
-    draft_device = next(draft_model.parameters()).device  # Get draft model's device
+    draft_device = draft_model.device  # Get draft model's device
     if draf_input_pos is None:
         draf_input_pos = input_pos
     orig_input_pos = torch.tensor([draf_input_pos], dtype=torch.int64, device=draft_device)
@@ -455,7 +455,7 @@ def generate(
     
     input_pos = torch.arange(0, lengths["input_embed_length"], device=device)
     if is_speculative:
-        draft_input_pos = torch.arange(0, lengths["draft_input_embed_length"], device=device)
+        draft_input_pos = torch.arange(0, lengths["draft_input_embed_length"], device=draft_model.device)
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
@@ -465,12 +465,14 @@ def generate(
             next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
         if is_speculative:
             if draft_multimodal:
-                prefill(draft_model, prompt.view(batch_size, -1), input_pos, draft_embedded, **sampling_kwargs)
+                prefill(draft_model, prompt.view(batch_size, -1).to(draft_model.device),
+                        input_pos.to(draft_model.device), draft_embedded, **sampling_kwargs)
             elif multimodal:
                 # Target multimodal, draft text only
                 prefill(draft_model, draft_encoded.view(batch_size, -1), draft_input_pos, **sampling_kwargs)
             else:
-                prefill(draft_model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs)
+                prefill(draft_model, prompt.view(batch_size, -1).to(draft_model.device),
+                        input_pos.to(draft_model.device), **sampling_kwargs)
     seq[:, lengths["input_text_length"]] = next_token.squeeze()
     input_pos = torch.tensor([lengths["input_embed_length"]], device=device, dtype=torch.int)
     
@@ -803,6 +805,7 @@ def main(
     model = _load_model(checkpoint_path, device, precision, use_tp)
     model.requires_grad_(False) 
     multimodal = getattr(model.config, "mm_config", None) is not None
+    model.device = device
     if multimodal:
         torch.set_default_dtype(precision)
         torch.set_default_device(device)
@@ -818,25 +821,26 @@ def main(
 
     if is_speculative:
         # Use specified draft device or default to main device
-        draft_device_actual = draft_device if draft_device is not None else device
-        print(f"Loading draft model from {draft_checkpoint_path} on {draft_device_actual}")
-        draft_model = _load_model(draft_checkpoint_path, draft_device_actual, precision, use_tp=False)
+        draft_device = draft_device if draft_device is not None else device
+        print(f"Loading draft model from {draft_checkpoint_path} on {draft_device}")
+        draft_model = _load_model(draft_checkpoint_path, draft_device, precision, use_tp=False)
         draft_model.requires_grad_(False) 
         draft_multimodal = getattr(draft_model.config, "mm_config", None) is not None
+        draft_model.device = draft_device
         if draft_multimodal:
             # Set temporary default device for vision modules loading
-            if device != draft_device_actual:
-                torch.set_default_device(draft_device_actual)
+            if device != draft_device:
+                torch.set_default_device(draft_device)
             draft_vision_checkpoints = draft_checkpoint_path.parent / "vision_modules.pth"
             draft_vision_modules = VisionModule.from_name(draft_checkpoint_path.parent.name, 
                                                         config=draft_model.config.mm_config, 
                                                         checkpoint_path=draft_vision_checkpoints,
                                                         dtype=precision,
-                                                        device=draft_device_actual)
+                                                        device=draft_device)
             draft_vision_modules.eval_mode()
             
             # Restore original default device
-            if device != draft_device_actual:
+            if device != draft_device:
                 torch.set_default_device(device)
         else:
             draft_vision_modules = None
