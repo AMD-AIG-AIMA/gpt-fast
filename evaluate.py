@@ -762,8 +762,8 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
               'category': question.get('cat', None),
               'model': eval_info.get('model', ''),
               'draft_model': eval_info.get('draft_model', ''),
-              'benchmark': eval_info.get('branch_name', ''),
-              'speculative k': eval_info.get('speculate_k', ''),
+              'benchmark': eval_info.get('benchmark', ''),
+              'speculative k': eval_info.get('speculative k', ''),
               'compile': eval_info.get('compile', ''),
               'compile_prefill': eval_info.get('compile_prefill', ''),
               'temperature': eval_info.get('temperature', ''),
@@ -874,7 +874,7 @@ def main(
     system_message = ("You are a helpful, respectful and honest assistant. Always answer as helpfully as possible. ")
     
     # Warmup calls
-    print("Warming up...")
+    print(f"Warming up for {warmup} steps...")
     process_questions(
         questions[:warmup], model, tokenizer, conv, system_message,
         max_new_tokens, temperature, top_k, draft_model, speculate_k,
@@ -884,7 +884,7 @@ def main(
 
     if num_questions is not None:
         questions = questions[:num_questions]
-    
+
     eval_info = {
       'model': str(checkpoint_path.parent.name),
       'draft_model': str(draft_checkpoint_path.parent.name) if is_speculative else None,
