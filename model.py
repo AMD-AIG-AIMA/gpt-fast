@@ -208,10 +208,10 @@ class Transformer(nn.Module):
         if self.mrope:
             if position_ids is None:
                 raise ValueError('Multimodal Rope requires the position id')
-            self.freqs_cis = precompute_freqs_cis_for_qwen2_5(self.config.block_size, self.config.dim // self.config.n_head, 
+            self.freqs_cis = precompute_freqs_cis_for_qwen2_5(max_seq_length, self.config.dim // self.config.n_head, 
                                                               position_ids, self.config.rope_base, dtype, self.config.rope_scaling).to(self._device)
         else:
-            self.freqs_cis = precompute_freqs_cis(self.config.block_size, self.config.dim // self.config.n_head,
+            self.freqs_cis = precompute_freqs_cis(max_seq_length, self.config.dim // self.config.n_head,
                                                   self.config.rope_base, dtype, self.config.rope_scaling).to(self._device)
         self.causal_mask = torch.tril(torch.ones(self.max_seq_length, self.max_seq_length, dtype=torch.bool, device=self._device))
 
