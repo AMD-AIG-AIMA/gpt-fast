@@ -469,13 +469,13 @@ def generate(
             if draft_multimodal:
                 draft_device = draft_model._device
                 prefill(draft_model, prompt.view(batch_size, -1).to(draft_device),
-                        input_pos.to(draft_device), draft_embedded, **sampling_kwargs)
+                        draft_input_pos.to(draft_device), draft_embedded, **sampling_kwargs)
             elif multimodal:
                 # Target multimodal, draft text only
                 prefill(draft_model, draft_encoded.view(batch_size, -1), draft_input_pos, **sampling_kwargs)
             else:
                 prefill(draft_model, prompt.view(batch_size, -1).to(draft_device),
-                        input_pos.to(draft_device), **sampling_kwargs)
+                        draft_input_pos.to(draft_device), **sampling_kwargs)
     seq[:, lengths["input_text_length"]] = next_token.squeeze()
     input_pos = torch.tensor([lengths["input_embed_length"]], device=device, dtype=torch.int)
     
@@ -768,6 +768,9 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
               'compile_prefill': eval_info.get('compile_prefill', ''),
               'temperature': eval_info.get('temperature', ''),
               'top_k': eval_info.get('top_k', ''),
+              'use_tp': eval_info.get('use_tp', ''),
+              'max_seq_length': max_seq_length,
+              'draft_max_seq_length': draft_max_seq_length,
             })
     return results
 
@@ -894,6 +897,7 @@ def main(
       'compile_prefill': compile_prefill,
       'temperature': temperature,
       'top_k': top_k,
+      'use_tp': is_dist_initialized()
     }
     
     print("Running evaluation...")
@@ -936,7 +940,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate model on benchmark datasets.')
     parser.add_argument('--bench_name', type=str, required=True, help='Name of the benchmark (e.g., mt_bench, human_eval)')
     parser.add_argument('--checkpoint_path', type=Path, required=True, help='Path to the model checkpoint')
-    parser.add_argument('--max_new_tokens', type=int, default=100, help='Maximum number of new tokens to generate')
+    parser.add_argument('--max_new_tokens', type=int, default=500, help='Maximum number of new tokens to generate')
     parser.add_argument('--temperature', type=float, default=0.8, help='Temperature for sampling')
     parser.add_argument('--top_k', type=int, default=1, help='Top-k for sampling')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation')
