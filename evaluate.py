@@ -622,7 +622,7 @@ def _get_model_size(model):
 def process_questions(questions, model, tokenizer, conv, system_message, max_new_tokens, temperature, top_k,
                      draft_model, speculate_k, do_block_verify, device, multimodal=False, vision_modules=None,
                      draft_vision_modules=None, max_seq_length=None, draft_max_seq_length=None, cross_attention_seq_length=None,
-                     collect_metrics=False, eval_info={}):
+                     collect_metrics=False, eval_info={}, mm_prune_method=None, mm_prune_ratio=0.0):
     """Process a list of questions through the model and return results.
     
     Args:
@@ -645,6 +645,8 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
         cross_attention_seq_length: Maximum sequence length used for KV-cache of cross_attention modules
         collect_metrics: Whether to collect and return metrics
         eval_info: Evaluation information to be saved with the log
+        mm_prune_method: Method for pruning multimodal tokens ('none', 'random', 'structured')
+        mm_prune_ratio: Ratio of multimodal tokens to prune (0.0 to 1.0)
         
     Returns:
         List of results if collect_metrics=True, otherwise None
@@ -689,6 +691,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                             _, draft_embedded = draft_vision_modules(
                                 prompt=prompt, tokenizer=tokenizer, images=images,
                                 embed_tokens=draft_model.tok_embeddings, 
+                                prune_method=mm_prune_method, prune_ratio=mm_prune_ratio,
                             )
                             draft_encoded = None
                             draft_model.cross_attention_mask = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)  
@@ -792,6 +795,8 @@ def main(
     max_seq_length: int = None,
     draft_max_seq_length: int = None,
     cross_attention_seq_length: int = None,
+    mm_prune_method: str = None,
+    mm_prune_ratio: float = 0.0,
 ):
     global print
     # Initialize distributed setup
@@ -881,8 +886,10 @@ def main(
     process_questions(
         questions[:warmup], model, tokenizer, conv, system_message,
         max_new_tokens, temperature, top_k, draft_model, speculate_k,
-        do_block_verify, device,multimodal, vision_modules, draft_vision_modules,
-        max_seq_length, draft_max_seq_length, cross_attention_seq_length, collect_metrics=False
+        do_block_verify, device, multimodal, vision_modules, draft_vision_modules,
+        max_seq_length, draft_max_seq_length, cross_attention_seq_length, 
+        collect_metrics=False, mm_prune_method=mm_prune_method, 
+        mm_prune_ratio=mm_prune_ratio
     )
 
     if num_questions is not None:
@@ -905,7 +912,9 @@ def main(
         questions, model, tokenizer, conv, system_message,
         max_new_tokens, temperature, top_k, draft_model, speculate_k,
         do_block_verify, device, multimodal, vision_modules, draft_vision_modules,
-        max_seq_length, draft_max_seq_length, cross_attention_seq_length, collect_metrics=True, eval_info=eval_info
+        max_seq_length, draft_max_seq_length, cross_attention_seq_length, 
+        collect_metrics=True, eval_info=eval_info,
+        mm_prune_method=mm_prune_method, mm_prune_ratio=mm_prune_ratio
     )
 
     if rank == 0 or rank is None:
@@ -956,10 +965,16 @@ if __name__ == '__main__':
     parser.add_argument("--max_seq_length", default=None, type=int, help="Maximum sequence length for the model")
     parser.add_argument("--draft_max_seq_length", default=None, type=int, help="Maximum sequence length for the draft model")
     parser.add_argument("--cross_attention_seq_length", default=None, type=int, help="Maximum cross_attention sequence length for models with cross_attention")
+    parser.add_argument('--mm_prune_method', type=str, default=None, 
+                       choices=['random', 'structured'],
+                       help='Method for pruning multimodal tokens in draft model')
+    parser.add_argument('--mm_prune_ratio', type=float, default=0.0,
+                       help='Ratio of multimodal tokens to prune (0.0 to 1.0)')
     
     args = parser.parse_args()
     if args.random_seed:
         torch.manual_seed(args.random_seed)
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
          args.draft_checkpoint_path, args.draft_device, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
-         args.warmup, args.do_block_verify, args.max_seq_length, args.draft_max_seq_length, args.cross_attention_seq_length)
+         args.warmup, args.do_block_verify, args.max_seq_length, args.draft_max_seq_length, args.cross_attention_seq_length,
+         args.mm_prune_method, args.mm_prune_ratio)
