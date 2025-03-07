@@ -43,9 +43,14 @@ class TimeProfiler(ContextDecorator):
         elapsed_time = time.time() - self.start_time
         self.__class__._timings[self.name].append(elapsed_time)
         
+        self.last_elapsed_time = elapsed_time
+        if self.tokens_processed is not None:
+            self.last_tokens_per_second = self.tokens_processed / elapsed_time
+        else:
+            self.last_tokens_per_second = None
+            
         if self.tokens_processed is not None and self.model_size is not None and self.peak_bandwidth is not None:
-            tokens_per_second = self.tokens_processed / elapsed_time
-            bw_utilization = (tokens_per_second * self.model_size) / self.peak_bandwidth
+            bw_utilization = (self.last_tokens_per_second * self.model_size) / self.peak_bandwidth
             self.__class__._bw_utilizations[self.name].append(bw_utilization)
         
         self.tokens_processed = None  # Reset for next use
@@ -53,6 +58,9 @@ class TimeProfiler(ContextDecorator):
 
     def set_tokens_processed(self, tokens):
         self.tokens_processed = tokens
+        
+    def get_last_call_stats(self):
+        return self.last_elapsed_time, self.last_tokens_per_second
 
     @classmethod
     def set_warm_up(cls, num_warmup):

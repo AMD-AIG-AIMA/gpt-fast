@@ -476,6 +476,7 @@ def generate(
             else:
                 prefill(draft_model, prompt.view(batch_size, -1).to(draft_device),
                         draft_input_pos.to(draft_device), **sampling_kwargs)
+    prefill_time, prefill_tokens_per_second = profiler.get_last_call_stats()
     seq[:, lengths["input_text_length"]] = next_token.squeeze()
     input_pos = torch.tensor([lengths["input_embed_length"]], device=device, dtype=torch.int)
     
@@ -532,7 +533,8 @@ def generate(
         seq = seq[:, :end]
 
     generate_stats = {
-        'accept_counts': accept_counts
+        'accept_counts': accept_counts,
+        'prefill_time': prefill_time
     }
     
     # print('after: ', seq)
@@ -667,6 +669,8 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
         turns = []
         new_tokens = []
         wall_time = []
+        prefill_time = []
+
         stop_token_ids_set = set(conv.stop_token_ids)
         stop_token_ids_tensor = torch.tensor(conv.stop_token_ids, device=device)
         # Create an optimized callback function that handles both single tokens and batches
@@ -763,14 +767,15 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
             generated_text = generated_text.strip()
             
             if collect_metrics:
-                walltime = end_time - start_time
+                walltime = end_time - start_time - metrics['prefill_time']
                 tokens_generated = len(output[0]) - len(encoded)
-                speed = tokens_generated / walltime
+                speed = (tokens_generated - 1)/ walltime
                 
                 turns.append(generated_text)
                 new_tokens.append(tokens_generated)
                 wall_time.append(walltime)
                 speeds.append(speed)
+                prefill_time.append(metrics['prefill_time'])
             
             conv.messages[-1][-1] = generated_text
 
@@ -780,6 +785,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
               'turns': turns,
               'tokens_generated': new_tokens,
               'walltime': wall_time,
+              'prefill_time': metrics['prefill_time'],
               'speed': speeds[-len(turns):],
               'accept_counts': metrics['accept_counts'] if is_speculative else None,
               'category': question.get('cat', None),
