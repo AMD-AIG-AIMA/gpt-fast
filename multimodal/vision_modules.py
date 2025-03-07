@@ -262,6 +262,8 @@ class Qwen2_5VisionModule(VisionModule):
         prune_method=None,
         prune_ratio=0.0,
         ):
+        if prune_method is not None or prune_ratio > 0.0:
+            raise NotImplementedError('Pruning is not implemented for Qwen2.5 VL series of models. As an alternative, You can set the \'max_pixels\' in mm_config.py to a smaller value to reduce the size of visual tokens.')
         original_prompt = prompt[:]
         prompt = process_prompt_for_qwen2_5vl(prompt)
         processor = get_processor(self._processor_id)
