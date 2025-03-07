@@ -500,11 +500,12 @@ def generate(
             else:
                 text_input_pos = input_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
                 seq[:, text_input_pos : text_input_pos + num_added] = next_tokens[: num_added]
-            # for i in next_tokens[: num_added,]:
-            #     callback(i)
             input_pos = input_pos + num_added
             draft_input_pos = draft_input_pos + num_added
             next_token = next_tokens[-1]
+            # check if stop token is found
+            if callback(next_tokens[: num_added,]):
+                break
         text_input_pos = input_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
         seq = seq[:, :text_input_pos]
     else:
@@ -521,7 +522,9 @@ def generate(
                     )
                     input_pos += 1
                     new_tokens.append(next_token.clone())
-                    # callback(new_tokens[-1])
+                    # Check single token
+                    if callback(next_token):
+                        break  # Stop if token matches stopping criteria
                     new_probs.append(next_prob.clone())
                     cur_token = next_token.clone()
         end = len(new_tokens) + lengths["input_text_length"] +1
@@ -663,7 +666,8 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
         turns = []
         new_tokens = []
         wall_time = []
-
+        stop_token_ids_set = set(conv.stop_token_ids)
+        stop_token_ids_tensor = torch.tensor(conv.stop_token_ids, device=device)
         for j in range(len(question["turns"])):
             qs = question["turns"][j]
             conv.append_message(conv.roles[0], qs)
@@ -704,6 +708,22 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                             draft_encoded, draft_embedded = None, None
                         encoded = encoded.squeeze(0)
             
+            # Create an optimized callback function that handles both single tokens and batches
+            def token_callback(tokens):
+                # Handle the case where tokens is a single token tensor
+                if tokens.numel() == 1:
+                    if tokens.item() in stop_token_ids_set:
+                        return True
+                    return False
+                
+                # Handle batch of tokens with vectorized operation
+                if conv.stop_token_ids:
+                    # Check if any token in the batch is a stop token
+                    is_stop = torch.isin(tokens, stop_token_ids_tensor.to(tokens.device))
+                    return is_stop.any().item()
+                
+                return False
+            
             start_time = time.time()
             with TimeProfiler("generate"):
                 output, metrics = generate(
@@ -716,7 +736,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                     batch_size=1,
                     draft_model=draft_model,
                     speculate_k=speculate_k,
-                    callback=lambda x: x,
+                    callback=token_callback,
                     do_block_verify=do_block_verify,
                     embedded=embedded,
                     draft_encoded=draft_encoded,
