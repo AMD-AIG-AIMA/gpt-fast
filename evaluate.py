@@ -203,13 +203,13 @@ def token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, 
         draft_probs = draft_probs.squeeze(1)
     p = draft_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
     q = target_probs[torch.arange(0, speculate_k, device=device), draft_tokens]
-    if is_dist_initialized():
-        broadcast(p, 0)
-        broadcast(q, 0)
+    # if is_dist_initialized():
+    #     broadcast(p, 0)
+    #     broadcast(q, 0)
     accept_draft_prob = torch.minimum(torch.ones(()), q[:speculate_k]/ p)
     rand_vals = torch.rand_like(accept_draft_prob)
-    if is_dist_initialized():
-        broadcast(rand_vals, 0)
+    # if is_dist_initialized():
+    #     broadcast(rand_vals, 0)
     rejected_locations = (rand_vals > accept_draft_prob).nonzero()
 
     if rejected_locations.shape[0] == 0: # All draft tokens have been accepted
@@ -271,12 +271,20 @@ def speculative_decode(
             torch.arange(input_pos, input_pos + speculate_k + 1, device=device),
         )
     
+    verified_tokens = -1 * torch.ones(speculate_k + 2, device=device, dtype=draft_tokens.dtype)
     if not do_block_verify:
         with TimeProfiler("Token Verify"):
-            verified_tokens = token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
+            new_tokens = token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
     else:
         with TimeProfiler("Block Verify"):
-            verified_tokens = block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
+            new_tokens = block_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs)
+    if is_dist_initialized():
+        verified_tokens[:len(new_tokens)] = new_tokens
+        verified_tokens[-1] = len(new_tokens)
+        broadcast(verified_tokens, 0)
+        verified_tokens = verified_tokens[:verified_tokens[-1]]
+    else:
+        verified_tokens = new_tokens
     
     # fill last token into draft model if all speculative tokens have been accepted
     if verified_tokens.shape[0] == speculate_k + 1:
