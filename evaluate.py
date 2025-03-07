@@ -668,6 +668,21 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
         wall_time = []
         stop_token_ids_set = set(conv.stop_token_ids)
         stop_token_ids_tensor = torch.tensor(conv.stop_token_ids, device=device)
+        # Create an optimized callback function that handles both single tokens and batches
+        def token_callback(tokens):
+            # Handle the case where tokens is a single token tensor
+            if tokens.numel() == 1:
+                if tokens.item() in stop_token_ids_set:
+                    return True
+                return False
+            
+            # Handle batch of tokens with vectorized operation
+            if conv.stop_token_ids:
+                # Check if any token in the batch is a stop token
+                is_stop = torch.isin(tokens, stop_token_ids_tensor.to(tokens.device))
+                return is_stop.any().item()
+            return False
+        
         for j in range(len(question["turns"])):
             qs = question["turns"][j]
             conv.append_message(conv.roles[0], qs)
@@ -707,22 +722,6 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                         else:
                             draft_encoded, draft_embedded = None, None
                         encoded = encoded.squeeze(0)
-            
-            # Create an optimized callback function that handles both single tokens and batches
-            def token_callback(tokens):
-                # Handle the case where tokens is a single token tensor
-                if tokens.numel() == 1:
-                    if tokens.item() in stop_token_ids_set:
-                        return True
-                    return False
-                
-                # Handle batch of tokens with vectorized operation
-                if conv.stop_token_ids:
-                    # Check if any token in the batch is a stop token
-                    is_stop = torch.isin(tokens, stop_token_ids_tensor.to(tokens.device))
-                    return is_stop.any().item()
-                
-                return False
             
             start_time = time.time()
             with TimeProfiler("generate"):
