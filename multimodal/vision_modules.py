@@ -225,7 +225,7 @@ class LlavaVisionModule(VisionModule):
                                         embed_tokens, 
                                         self._device, 
                                         modalities=["image"])
-        return input_ids, embeds[4].to(dtype=self.dtype)
+        return input_ids, embeds.to(dtype=self.dtype)
     
 @VisionModule.register("Qwen2.5")
 class Qwen2_5VisionModule(VisionModule):
