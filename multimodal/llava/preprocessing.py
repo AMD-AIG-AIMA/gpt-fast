@@ -266,7 +266,17 @@ def prepare_inputs_labels_for_multimodal(input_ids,
     if getattr(config, "tune_mm_mlp_adapter", False) and getattr(config, "mm_use_im_start_end", False):
         raise NotImplementedError
     # rank_print(f"Total images : {len(image_features)}")
+    return image_features
 
+def embed_multimodal_tokens(input_ids,
+                            position_ids, 
+                            attention_mask, 
+                            labels, 
+                            image_features, 
+                            config, 
+                            embed_tokens, 
+                            device, 
+                            modalities=["image"]):
     # Let's just add dummy tensors if they do not exist,
     # it is a headache to deal with None all the time.
     # But it is not ideal, and if you have a better idea,
@@ -377,28 +387,28 @@ def prepare_inputs_labels_for_multimodal(input_ids,
     new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
     # rank0_print("tokenizer padding")
 
-    if _labels is None:
-        new_labels = None
-    else:
-        new_labels = new_labels_padded
+    # if _labels is None:
+    #     new_labels = None
+    # else:
+    #     new_labels = new_labels_padded
 
-    if _attention_mask is None:
-        attention_mask = None
-    else:
-        attention_mask = attention_mask.to(dtype=_attention_mask.dtype)
+    # if _attention_mask is None:
+    #     attention_mask = None
+    # else:
+    #     attention_mask = attention_mask.to(dtype=_attention_mask.dtype)
 
-    if _position_ids is None:
-        position_ids = None
-    if getattr(config, "use_pos_skipping", False) and training:
-        position_ids = torch.arange(new_input_embeds.size(1), device=new_input_embeds.device).unsqueeze(0).to(new_input_embeds.device)
-        split_position = random.randint(0, new_input_embeds.size(1))
-        left_add = random.randint(0, config.pos_skipping_range)
-        right_add = random.randint(left_add, config.pos_skipping_range)
-        position_ids[:, :split_position] += left_add
-        position_ids[:, split_position:] += right_add
+    # if _position_ids is None:
+    #     position_ids = None
+    # if getattr(config, "use_pos_skipping", False) and training:
+    #     position_ids = torch.arange(new_input_embeds.size(1), device=new_input_embeds.device).unsqueeze(0).to(new_input_embeds.device)
+    #     split_position = random.randint(0, new_input_embeds.size(1))
+    #     left_add = random.randint(0, config.pos_skipping_range)
+    #     right_add = random.randint(left_add, config.pos_skipping_range)
+    #     position_ids[:, :split_position] += left_add
+    #     position_ids[:, split_position:] += right_add
     # import pdb; pdb.set_trace()
     # rank0_print("Finish preparing")
-    return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
+    return new_input_embeds
 
 
 # def embed_tokens_multimodal(

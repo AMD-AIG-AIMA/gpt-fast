@@ -14,7 +14,11 @@ from dataclasses import asdict
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
 from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLVisionConfig
 
-from multimodal.llava.preprocessing import process_images, tokenizer_image_token, prepare_inputs_labels_for_multimodal, IMAGE_TOKEN_INDEX
+from multimodal.llava.preprocessing import (process_images, 
+                                            tokenizer_image_token, 
+                                            prepare_inputs_labels_for_multimodal, 
+                                            embed_multimodal_tokens, 
+                                            IMAGE_TOKEN_INDEX)
 from multimodal.qwen2_5vl.preprocessing import process_prompt_for_qwen2_5vl, get_processor, prepare_input_embeds
 from multimodal.mm_config import QwenVisionModelArgs 
 
@@ -117,6 +121,50 @@ class VisionModule(ABC, nn.Module):
             mapped_name.sort(key=len, reverse=True)
             assert len(mapped_name[0]) != len(mapped_name[1]), model_name # make sure only one 'best' match
         return cls._registry[mapped_name[0]](**kwargs)
+
+def prune_mm_tokens(embedded, prune_method=None, prune_ratio=0.0, dim=1):
+        """Prune Multimodal tokens from the embedded tensor.
+        
+        Args:
+            embedded: Tensor containing multimodal token embeddings
+            prune_method: Method for pruning (None, 'random', 'structured')
+            prune_ratio: Ratio of tokens to prune (0.0 to 1.0)
+            dim: Dimension along which to prune tokens (default: 1)
+            
+        Returns:
+            Pruned embedded tensor
+        """
+        if prune_method is None or prune_ratio <= 0.0:
+            return embedded
+        
+        # Make a copy to avoid modifying the original
+        pruned = embedded.clone()
+        
+        # Get dimensions
+        seq_length = pruned.size(dim)
+        
+        keep_ratio = 1.0 - prune_ratio
+        num_keep = int(seq_length * keep_ratio)
+        
+        if prune_method == 'random':
+            # Randomly select tokens to keep
+            indices = torch.randperm(seq_length, device=pruned.device)[:num_keep].to(pruned.device)
+            indices, _ = torch.sort(indices)  # Sort to maintain sequence order
+            
+            pruned = torch.index_select(pruned, dim, indices)
+                
+        elif prune_method == 'structured':
+            # Keep a structured pattern (e.g., 3 out of every 4 tokens)
+            stride = int(1.0 / keep_ratio)
+            to_remove = torch.arange(stride-1, seq_length, stride, device=pruned.device)
+            mask = torch.ones(seq_length, device=pruned.device, dtype=torch.bool)
+            mask[to_remove] = False
+
+            # Select the indices where mask is True
+            keep_indices = torch.where(mask)[0]
+            pruned = torch.index_select(pruned, dim, keep_indices)
+        
+        return pruned
     
 
 @VisionModule.register("llava")
@@ -126,7 +174,7 @@ class LlavaVisionModule(VisionModule):
         config,
         checkpoint_path: Optional[Path] = None,
         dtype: torch.dtype = torch.float16,
-        device: Optional[Union[str, torch.device]] = None
+        device: Optional[Union[str, torch.device]] = None,
     ):
         super().__init__(config, dtype, device)
         from multimodal.llava.builder import build_vision_tower, build_vision_resampler, build_vision_projector
@@ -148,6 +196,8 @@ class LlavaVisionModule(VisionModule):
         tokenizer,
         images,
         embed_tokens,
+        prune_method=None,
+        prune_ratio=0.0,
         ):
         image_tensor = process_images(images, self.vision_tower.image_processor, self.config)
         image_tensor = [_image.to(dtype=self.dtype, device=self._device) for _image in image_tensor]
@@ -157,7 +207,7 @@ class LlavaVisionModule(VisionModule):
                             IMAGE_TOKEN_INDEX,
                             return_tensors="pt"
                         ).unsqueeze(0).to(self._device)
-        embeds = prepare_inputs_labels_for_multimodal(input_ids, None, None, None, None, 
+        image_features = prepare_inputs_labels_for_multimodal(input_ids, None, None, None, None, 
                                     image_tensor,
                                     config=self.config,
                                     vision_tower=self.vision_tower,
@@ -167,7 +217,15 @@ class LlavaVisionModule(VisionModule):
                                     modalities=["image"],
                                     image_newline=self.image_newline, 
                                     image_sizes=[img.size for img in images])
-        return input_ids, embeds[4].to(dtype=self.dtype)
+        if prune_method is not None and prune_ratio > 0.0:
+            image_features = [prune_mm_tokens(image_features, prune_method, prune_ratio, dim=0) for image_features in image_features]
+        embeds = embed_multimodal_tokens(input_ids, None, None, None, 
+                                        image_features, 
+                                        self.config, 
+                                        embed_tokens, 
+                                        self._device, 
+                                        modalities=["image"])
+        return input_ids, embeds.to(dtype=self.dtype)
     
 @VisionModule.register("Qwen2.5")
 class Qwen2_5VisionModule(VisionModule):
@@ -176,7 +234,8 @@ class Qwen2_5VisionModule(VisionModule):
           config,
           checkpoint_path: Optional[Path] = None,
           dtype: torch.dtype = torch.float16,
-          device: Optional[Union[str, torch.device]] = None):
+          device: Optional[Union[str, torch.device]] = None,
+        ):
         super().__init__(config, dtype, device)
         name = Path(checkpoint_path).parent.name
         self._processor_id = Path(*Path(checkpoint_path).parent.parts[-2:])
@@ -200,7 +259,11 @@ class Qwen2_5VisionModule(VisionModule):
         tokenizer,
         images,
         embed_tokens,
+        prune_method=None,
+        prune_ratio=0.0,
         ):
+        if prune_method is not None or prune_ratio > 0.0:
+            raise NotImplementedError('Pruning is not implemented for Qwen2.5 VL series of models. As an alternative, You can set the \'max_pixels\' in mm_config.py to a smaller value to reduce the size of visual tokens.')
         original_prompt = prompt[:]
         prompt = process_prompt_for_qwen2_5vl(prompt)
         processor = get_processor(self._processor_id)
@@ -279,6 +342,8 @@ class LlamaVisionModule(VisionModule):
         tokenizer,
         images,
         embed_tokens,
+        prune_method=None,
+        prune_ratio=0.0,
         ):
         # Replace <image>, <image1>, <image2>, ... with <|image|>
         prompt = re.sub(r'<image\s*\d*>', '<|image|>', prompt)
@@ -304,10 +369,12 @@ class LlamaVisionModule(VisionModule):
             cross_attention_states = self.multi_modal_projector(cross_attention_states).reshape(
                 -1, cross_attention_states.shape[-2], self.config.text_hidden_size
             )
+            if prune_method is not None and prune_ratio > 0.0:
+                cross_attention_states = prune_mm_tokens(cross_attention_states, prune_method, prune_ratio)
 
             cross_attention_mask, out_mask = self._prepare_cross_attention_mask(
                 inputs.cross_attention_mask,
-                num_vision_tokens=self.vision_model.num_patches,
+                num_vision_tokens=cross_attention_states.shape[1],
                 dtype=self.dtype,
             )
             self.cross_attention_masks = {'cross_attention_mask': cross_attention_mask, 'cross_attention_mask_out': out_mask}
