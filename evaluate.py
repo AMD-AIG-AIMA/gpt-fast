@@ -529,6 +529,7 @@ def generate(
                     cur_token = next_token.clone()
         end = len(new_tokens) + lengths["input_text_length"] +1
         seq[:, lengths["input_text_length"] + 1:end] = torch.cat(new_tokens, dim=-1)
+        seq = seq[:, :end]
 
     generate_stats = {
         'accept_counts': accept_counts
