@@ -107,7 +107,7 @@ class QwenVisionModelArgs(MultimodalModelArgs):
     ],
     tokens_per_second: int = 2,
     temporal_patch_size: int = 2,
-    mropes: bool = True,
+    mrope: bool = True,
     image_factor: int = 28,
     min_pixels: int = 4 * 28 * 28,
     max_pixels: int = 4098 * 28 * 28,
