@@ -147,7 +147,11 @@ class KVCache(nn.Module):
         v_out[:, :, input_pos] = v_val
 
         return k_out, v_out
-
+    
+    def clear(self):
+        self.k_cache.zero_()
+        self.v_cache.zero_()
+        
 class Transformer(nn.Module):
     def __init__(self, config: ModelArgs) -> None:
         super().__init__()
@@ -180,7 +184,7 @@ class Transformer(nn.Module):
             self.image_grid_thw=None
         
 
-    def setup_caches(self, max_batch_size, max_seq_length, prompt, cross_attention_seq_length=None):
+    def setup_caches(self, max_batch_size, max_seq_length, prompt=None, cross_attention_seq_length=None):
         if self.mrope:
             position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=getattr(self,'image_grid_thw', None), mm_config=self.config.mm_config)
         else:
@@ -194,7 +198,7 @@ class Transformer(nn.Module):
             dtype = self.output.scales_and_zeros.dtype
             
         if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size and (self.cross_attention_seq_length >= cross_attention_seq_length if cross_attention_seq_length is not None else True):
-            if self.mrope is not None:
+            if self.mrope:
                 self.freqs_cis[:max_seq_length] = precompute_freqs_cis_for_qwen2_5_vl(max_seq_length, self.config.dim // self.config.n_head, 
                                                               position_ids, self.config.rope_base, dtype, self.config.rope_scaling).to(self._device)
             return
@@ -244,6 +248,13 @@ class Transformer(nn.Module):
         x = self.norm(x)
         logits = self.output(x)
         return logits
+    
+    def clear_cache(self):
+        for b in self.layers:
+            if hasattr(b,'attention'):
+                b.attention.kv_cache.clear()
+            if hasattr(b,'cross_attention'):
+                b.cross_attention.kv_cache.clear()
 
     @classmethod
     def from_name(cls, name: str):

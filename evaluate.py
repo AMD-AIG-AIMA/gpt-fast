@@ -737,8 +737,9 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                             # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
                             draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=draft_model._device)
                             draft_embedded = None
+                            draft_prompt = None
                         else:
-                            draft_encoded, draft_embedded = None, None
+                            draft_encoded, draft_embedded, draft_prompt = None, None, None
                         encoded = encoded.squeeze(0)
             
             start_time = time.time()
@@ -764,7 +765,9 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                     cross_attention_seq_length=cross_attention_seq_length,
                 )
             end_time = time.time()
-            
+            model.clear_cache()
+            if is_speculative:
+                draft_model.clear_caches()
             output_ids = output[0][len(encoded):]
             if conv.stop_token_ids:
                 stop_token_ids_index = [i for i, id in enumerate(output_ids) if id in conv.stop_token_ids]
@@ -792,7 +795,6 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                 prefill_time.append(metrics['prefill_time'])
             
             conv.messages[-1][-1] = generated_text
-        print(f"tokens_generated: {new_tokens}, walltime: {wall_time}, speed: {speeds[-1] if speeds is not None else None}")
         if collect_metrics:
             results.append({
               'question_id': question.get('question_id', len(results)),
