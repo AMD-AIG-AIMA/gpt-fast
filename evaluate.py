@@ -767,7 +767,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
             end_time = time.time()
             model.clear_cache()
             if is_speculative:
-                draft_model.clear_caches()
+                draft_model.clear_cache()
             output_ids = output[0][len(encoded):]
             if conv.stop_token_ids:
                 stop_token_ids_index = [i for i, id in enumerate(output_ids) if id in conv.stop_token_ids]
@@ -796,6 +796,9 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
             
             conv.messages[-1][-1] = generated_text
         if collect_metrics:
+            print(f"question_id: {question.get('question_id', len(results))}")
+            print(f"tokens_generated: {new_tokens[-1]}, walltime: {wall_time[-1]}, speed: {speeds[-1]}")
+            print(f"turns: {turns[-1]}")
             results.append({
               'question_id': question.get('question_id', len(results)),
               'turns': turns,
