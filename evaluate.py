@@ -34,6 +34,15 @@ GPU_BANDWIDTH = {
     "H100": 3.35e12,
     "A100": 2.039e12,
 }
+
+DTYPE_MAP = {
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+    "int8": torch.int8,
+    "int4": torch.int4,
+    "fp8": torch.float8_e4m3fn,
+    "bf16": torch.bfloat16,    
+}
 device_name = torch.cuda.get_device_name()
 PEAK_BANDWIDTH = None
 rank = _get_rank()
@@ -588,8 +597,8 @@ def _load_model(checkpoint_path, device, precision, use_tp):
     checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
     if "model" in checkpoint and "stories" in str(checkpoint_path):
         checkpoint = checkpoint["model"]
+        
     model.load_state_dict(checkpoint, assign=True)
-
 
     if use_tp:
         from tp import apply_tp
@@ -796,9 +805,6 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
             
             conv.messages[-1][-1] = generated_text
         if collect_metrics:
-            print(f"question_id: {question.get('question_id', len(results))}")
-            print(f"tokens_generated: {new_tokens[-1]}, walltime: {wall_time[-1]}, speed: {speeds[-1]}")
-            print(f"turns: {turns[-1]}")
             results.append({
               'question_id': question.get('question_id', len(results)),
               'turns': turns,
@@ -829,6 +835,7 @@ def main(
     temperature: float = 0.8,
     top_k: int = 200,
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+    dtype: str = 'fp16',
     draft_checkpoint_path: Optional[Path] = None,
     draft_device: Optional[str] = None,
     speculate_k: int = 5,
@@ -853,10 +860,10 @@ def main(
             print = lambda *args, **kwargs: None
 
     print(f"Using device={device}")
-    precision = torch.float16
+    precision = DTYPE_MAP.get(dtype, torch.float16)
     is_speculative = draft_checkpoint_path is not None
     
-    print("Loading model ...")
+    print(f"Loading model from {checkpoint_path} on {device}")    
     t0 = time.time()
     model = _load_model(checkpoint_path, device, precision, use_tp)
     model.requires_grad_(False) 
@@ -998,6 +1005,7 @@ if __name__ == '__main__':
     parser.add_argument('--temperature', type=float, default=0.8, help='Temperature for sampling')
     parser.add_argument('--top_k', type=int, default=1, help='Top-k for sampling')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use for computation')
+    parser.add_argument('--dtype', type=str, default='fp16', help='dtype to use for computation. Choose from fp32, fp16, bf16, int8, int4 and fp8')
     parser.add_argument('--draft_checkpoint_path', type=Path, default=None, help='Path to the draft model checkpoint for speculative decoding')
     parser.add_argument('--draft_device', type=str, default=None, help='Device to use for draft model (defaults to same as target model)')
     parser.add_argument('--speculate_k', type=int, default=5, help='Speculative execution depth')
@@ -1019,7 +1027,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.random_seed:
         torch.manual_seed(args.random_seed)
-    main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device,
+    main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device, args.dtype,
          args.draft_checkpoint_path, args.draft_device, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
          args.warmup, args.do_block_verify, args.max_seq_length, args.draft_max_seq_length, args.cross_attention_seq_length,
          args.mm_prune_method, args.mm_prune_ratio)
