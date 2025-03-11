@@ -414,6 +414,7 @@ def generate(
     do_block_verify: bool = False,
     embedded: Optional[torch.Tensor] = None,
     draft_encoded: Optional[torch.Tensor] = None,
+    draft_prompt: Optional[torch.Tensor] = None,
     draft_embedded: Optional[torch.Tensor] = None,
     max_seq_length: Optional[int] = None,
     draft_max_seq_length: Optional[int] = None,
@@ -448,14 +449,14 @@ def generate(
         cross_attention_seq_length=cross_attention_seq_length,
         
     )
-    
+
     device, dtype = prompt.device, prompt.dtype
     # Setup model caches
     with torch.device(device):
         model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["max_seq_length"], prompt=prompt,
                            cross_attention_seq_length=lengths["cross_attention_seq_length"])
         if is_speculative and draft_model is not model:
-            draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["draft_max_seq_length"], prompt=prompt,
+            draft_model.setup_caches(max_batch_size=batch_size, max_seq_length=lengths["draft_max_seq_length"], prompt=draft_prompt,
                                      cross_attention_seq_length=lengths["cross_attention_seq_length"])
 
     # Initialize sequence tensor
@@ -476,7 +477,7 @@ def generate(
         if is_speculative:
             if draft_multimodal:
                 draft_device = draft_model._device
-                prefill(draft_model, prompt.view(batch_size, -1).to(draft_device),
+                prefill(draft_model, draft_prompt.view(batch_size, -1).to(draft_device),
                         draft_input_pos.to(draft_device), draft_embedded, **sampling_kwargs)
             elif multimodal:
                 # Target multimodal, draft text only
@@ -720,11 +721,15 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                         model.cross_attention_mask = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)
                         model.cross_attention_mask_out = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
                         if is_speculative and draft_multimodal:
-                            _, draft_embedded = draft_vision_modules(
+                            draft_prompt, draft_embedded = draft_vision_modules(
                                 prompt=prompt, tokenizer=tokenizer, images=images,
                                 embed_tokens=draft_model.tok_embeddings, 
                                 prune_method=mm_prune_method, prune_ratio=mm_prune_ratio,
                             )
+                            if isinstance(draft_prompt, BatchFeature):
+                                if 'image_grid_thw' in draft_prompt:
+                                    draft_model.image_grid_thw = draft_prompt['image_grid_thw']
+                                draft_prompt = draft_prompt['input_ids']
                             draft_encoded = None
                             draft_model.cross_attention_mask = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)  
                             draft_model.cross_attention_mask_out = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
@@ -751,6 +756,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                     callback=token_callback,
                     do_block_verify=do_block_verify,
                     embedded=embedded,
+                    draft_prompt=draft_prompt,
                     draft_encoded=draft_encoded,
                     draft_embedded=draft_embedded,
                     max_seq_length = max_seq_length,
@@ -786,7 +792,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                 prefill_time.append(metrics['prefill_time'])
             
             conv.messages[-1][-1] = generated_text
-
+        print(f"tokens_generated: {new_tokens}, walltime: {wall_time}, speed: {speeds[-1] if speeds is not None else None}")
         if collect_metrics:
             results.append({
               'question_id': question.get('question_id', len(results)),

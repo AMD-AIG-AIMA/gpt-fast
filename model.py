@@ -181,24 +181,31 @@ class Transformer(nn.Module):
         
 
     def setup_caches(self, max_batch_size, max_seq_length, prompt, cross_attention_seq_length=None):
-        if not self.mrope and self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size and (self.cross_attention_seq_length >= cross_attention_seq_length if cross_attention_seq_length is not None else True):
-            return
         if self.mrope:
             position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=getattr(self,'image_grid_thw', None), mm_config=self.config.mm_config)
         else:
             position_ids = None
-        head_dim = self.config.dim // self.config.n_head
-        max_seq_length = find_multiple(max_seq_length, 8)
-        self.max_seq_length = max_seq_length
-        self.max_batch_size = max_batch_size
-        if cross_attention_seq_length:
-            self.cross_attention_seq_length = cross_attention_seq_length
+        
         dtype = self.output.weight.dtype
         # For quantized layers, dtype is encoded in scales
         if hasattr(self.output, "scales"):
             dtype = self.output.scales.dtype
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
+            
+        if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size and (self.cross_attention_seq_length >= cross_attention_seq_length if cross_attention_seq_length is not None else True):
+            if self.mrope is not None:
+                self.freqs_cis[:max_seq_length] = precompute_freqs_cis_for_qwen2_5_vl(max_seq_length, self.config.dim // self.config.n_head, 
+                                                              position_ids, self.config.rope_base, dtype, self.config.rope_scaling).to(self._device)
+            return
+        
+        head_dim = self.config.dim // self.config.n_head
+        max_seq_length = find_multiple(max_seq_length, 8)
+        self.max_seq_length = max_seq_length
+        self.max_batch_size = max_batch_size
+        if cross_attention_seq_length:
+            self.cross_attention_seq_length = cross_attention_seq_length
+       
         for b in self.layers:
             if hasattr(b,'attention'):
                 b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, self._device, dtype)
@@ -208,7 +215,7 @@ class Transformer(nn.Module):
         if self.mrope:
             if position_ids is None:
                 raise ValueError('Multimodal Rope requires the position id')
-            self.freqs_cis = precompute_freqs_cis_for_qwen2_5(max_seq_length, self.config.dim // self.config.n_head, 
+            self.freqs_cis = precompute_freqs_cis_for_qwen2_5_vl(max_seq_length, self.config.dim // self.config.n_head, 
                                                               position_ids, self.config.rope_base, dtype, self.config.rope_scaling).to(self._device)
         else:
             self.freqs_cis = precompute_freqs_cis(max_seq_length, self.config.dim // self.config.n_head,
@@ -376,7 +383,7 @@ def precompute_freqs_cis(
 def flatten_freqs(freq, mrope_section):
     return torch.cat([m[i % 3] for i, m in enumerate(freq.split(mrope_section, dim=-1))], dim=-1).squeeze()
 
-def precompute_freqs_cis_for_qwen2_5(
+def precompute_freqs_cis_for_qwen2_5_vl(
     seq_len: int, n_elem: int, position_ids: torch.tensor, 
     base: int = 10000, 
     dtype: torch.dtype = torch.bfloat16,
