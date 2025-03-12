@@ -4,7 +4,7 @@ from typing import List, Optional
 import torch
 import torch.distributed as dist
 from torch import nn
-from model import Attention, FeedForward, Transformer
+from model import Attention, FeedForward, Transformer, CrossAttention
 from quantize import WeightOnlyInt4Linear
 
 
@@ -43,8 +43,14 @@ def shard_tensor(tensor: torch.Tensor, dim: int, world_size: int, rank: int) -> 
     return tensor.chunk(world_size, dim=dim)[rank]
 
 def shard_qkv(qkv: torch.Tensor, dim: int, weight_splits: List[int], world_size: int, rank: int) -> torch.Tensor:
-    q, k, v = qkv.split(weight_splits, dim=dim)
-    return torch.cat([shard_tensor(t, dim, world_size, rank) for t in (q, k, v)], dim=dim)
+    if len(weight_splits) == 3:
+        q, k, v = qkv.split(weight_splits, dim=dim)
+        return torch.cat([shard_tensor(t, dim, world_size, rank) for t in (q, k, v)], dim=dim)
+    elif len(weight_splits)==2:
+        k, v = qkv.split(weight_splits, dim=dim)
+        return torch.cat([shard_tensor(t, dim, world_size, rank) for t in (k, v)], dim=dim)
+    else:
+        raise NotImplementedError(f"The sharding for size {len(weight_splits)} is not implemented!")
 
 def apply_tp_linear(linear: nn.Linear, style: str, weight_splits: List[int] = []) -> None:
     rank = _get_rank()
@@ -107,6 +113,23 @@ def apply_tp_attn(attn: Attention) -> None:
     
     register_tp_hooks(attn)
 
+def apply_tp_cross_attn(cross_attn: CrossAttention) -> None:
+    world_size = _get_world_size()
+    
+    if any(dim % world_size != 0 for dim in [cross_attn.n_head, cross_attn.dim, cross_attn.n_local_heads]):
+        raise ValueError(f"Attention dimensions ({cross_attn.n_head}, {cross_attn.dim}, {cross_attn.n_local_heads}) are not divisible by {world_size} GPUs")
+    
+    apply_tp_linear(cross_attn.wq, "colwise")
+    apply_tp_linear(cross_attn.wkv, "colwise", [cross_attn.n_local_heads * cross_attn.head_dim, cross_attn.n_local_heads * cross_attn.head_dim])
+    apply_tp_linear(cross_attn.wo, "rowwise")
+    
+    cross_attn.n_head //= world_size
+    cross_attn.dim //= world_size
+    cross_attn.head_dim = cross_attn.dim // cross_attn.n_head
+    cross_attn.n_local_heads //= world_size
+    
+    register_tp_hooks(cross_attn)
+
 def apply_tp_transformer(transformer: Transformer) -> None:
     world_size = _get_world_size()
     
@@ -122,7 +145,10 @@ def apply_tp(model: Transformer) -> None:
         apply_tp_transformer(model)
         for block in model.layers:
             apply_tp_ffn(block.feed_forward)
-            apply_tp_attn(block.attention)
+            if getattr(block, "attention", False):
+                apply_tp_attn(block.attention)
+            elif getattr(block, 'cross_attention', False):
+                apply_tp_cross_attn(block.cross_attention)
     except ValueError as e:
         print(f"Error applying tensor parallelism: {e}\nEnsure model dimensions are divisible by number of GPUs.")
         raise
