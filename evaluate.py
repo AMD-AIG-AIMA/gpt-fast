@@ -17,8 +17,6 @@ from model import Transformer
 from tokenizer import get_tokenizer
 from multimodal.vision_modules import VisionModule
 
-torch._logging.set_logs(graph_breaks=True, recompiles=True)
-
 from time_profiler import TimeProfiler
 from transformers import BatchFeature  
 TimeProfiler.set_warm_up(5)
@@ -459,6 +457,7 @@ def generate(
         
     )
 
+    draft_prompt = draft_prompt.to(draft_model._device) if draft_prompt is not None else None
     device, dtype = prompt.device, prompt.dtype
     # Setup model caches
     with torch.device(device):
@@ -730,11 +729,16 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
                         model.cross_attention_mask = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)
                         model.cross_attention_mask_out = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
                         if is_speculative and draft_multimodal:
+                            # Set temporary default device for vision modules loading
+                            if model._device != draft_model._device:
+                                torch.set_default_device(draft_model._device)
                             draft_prompt, draft_embedded = draft_vision_modules(
                                 prompt=prompt, tokenizer=tokenizer, images=images,
                                 embed_tokens=draft_model.tok_embeddings, 
                                 prune_method=mm_prune_method, prune_ratio=mm_prune_ratio,
                             )
+                            # Reset default device
+                            torch.set_default_device(device)
                             if isinstance(draft_prompt, BatchFeature):
                                 if 'image_grid_thw' in draft_prompt:
                                     draft_model.image_grid_thw = draft_prompt['image_grid_thw']
@@ -825,6 +829,8 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
               'use_tp': eval_info.get('use_tp', ''),
               'max_seq_length': max_seq_length,
               'draft_max_seq_length': draft_max_seq_length,
+              'mm_prune_method': mm_prune_method,
+              'mm_prune_ratio': mm_prune_ratio,
             })
     return results
 

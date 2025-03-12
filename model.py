@@ -401,10 +401,10 @@ def precompute_freqs_cis_for_qwen2_5_vl(
     rope_scaling: Optional[dict] = None,
     mrope_section: Optional[list] = [16,24,24],
     ):
-    freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem))
+    freqs = 1.0 / (base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem)).to(device=position_ids.device)
     if rope_scaling is not None:
         freqs = apply_rope_scaling(freqs, rope_scaling)
-    t = torch.arange(position_ids[0,0,-1]+1, position_ids[0,0,-1] + 1 + seq_len - position_ids.shape[-1])
+    t = torch.arange(position_ids[0,0,-1]+1, position_ids[0,0,-1] + 1 + seq_len - position_ids.shape[-1]).to(device=position_ids.device)
     t = t.expand(3,position_ids.shape[1],-1)
     position_ids = torch.cat([position_ids, t], dim=-1)
     freqs_expanded = freqs[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
