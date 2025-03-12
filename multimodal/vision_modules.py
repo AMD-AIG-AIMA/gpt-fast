@@ -249,10 +249,11 @@ class Qwen2_5VisionModule(VisionModule):
         self.min_pixels = vision_config.min_pixels[0]
         self.max_pixels = vision_config.max_pixels[0]
         self.max_ratio = vision_config.max_ratio
-    def preprocess_images(self, images):
+        
+    def preprocess_images(self, images, prune_ratio):
         processed_images = []
         for image in images:
-            processed_images.append(self.resize(image))
+            processed_images.append(self.resize(image,prune_ratio))
         return processed_images
     def forward(self,
         prompt,
@@ -262,12 +263,12 @@ class Qwen2_5VisionModule(VisionModule):
         prune_method=None,
         prune_ratio=0.0,
         ):
-        if prune_method is not None or prune_ratio > 0.0:
-            raise NotImplementedError('Pruning is not implemented for Qwen2.5 VL series of models. As an alternative, You can set the \'max_pixels\' in mm_config.py to a smaller value to reduce the size of visual tokens.')
-        original_prompt = prompt[:]
+        if prune_method is 'random':
+            raise NotImplementedError('Random pruning is not implemented for Qwen2.5 VL series of models.')
+
         prompt = process_prompt_for_qwen2_5vl(prompt)
         processor = get_processor(self._processor_id)
-        images = self.preprocess_images(images)
+        images = self.preprocess_images(images, prune_ratio)
         inputs = processor(
             text=[prompt],
             images=images,
@@ -280,8 +281,11 @@ class Qwen2_5VisionModule(VisionModule):
 
         return inputs, inputs_embeds
     
-    def resize(self, image):
+    def resize(self, image, prune_ratio):
         resized_height, resized_width = self.get_resize_dims(image.height, image.width)
+        if prune_ratio > 0.0:
+            resized_height = int(resized_height*math.sqrt(1-prune_ratio))
+            resized_width = int(resized_width*math.sqrt(1-prune_ratio))
         return image.resize((resized_width, resized_height))
     
     def get_resize_dims(self, height: int, width: int):
