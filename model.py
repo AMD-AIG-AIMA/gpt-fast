@@ -236,6 +236,11 @@ class Transformer(nn.Module):
         else:
             x = embedded
 
+        if cross_states is not None or self.cross_attention_mask is None:
+            cross_attention_mask, cross_attention_mask_out = self.cross_attention_mask, self.cross_attention_mask_out
+        else:
+            cross_attention_mask=cross_attention_mask[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
+            cross_attention_mask_out=cross_attention_mask_out[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
         # Pass both freqs_cis and cross_states to all layers
         # Each block type will only use what it needs
         for layer in self.layers:
@@ -243,8 +248,8 @@ class Transformer(nn.Module):
             x = layer(x, input_pos=input_pos, freqs_cis=freqs_cis, 
                      cross_states=cross_states, 
                      mask=causal_mask,
-                     cross_attention_mask=self.cross_attention_mask,
-                     cross_attention_mask_out=self.cross_attention_mask_out)
+                     cross_attention_mask=cross_attention_mask,
+                     cross_attention_mask_out=cross_attention_mask_out)
         x = self.norm(x)
         logits = self.output(x)
         return logits
@@ -448,8 +453,6 @@ class CrossAttentionBlock(nn.Module):
         if cross_states is None and cross_attention_mask is None:
             # Layer is not used, language model only
             return x
-        cross_attention_mask=cross_attention_mask[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
-        cross_attention_mask_out=cross_attention_mask_out[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
         # Cross attention block uses cross_attention_mask
         h = x + self.cross_attention(self.attention_norm(x), cross_states, cross_attention_mask, input_pos) * self.cross_attn_attn_gate.tanh()
         out = h + self.feed_forward(self.ffn_norm(h)) * self.cross_attn_mlp_gate.tanh() * cross_attention_mask_out[:,0]
