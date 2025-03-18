@@ -239,8 +239,8 @@ class Transformer(nn.Module):
         if cross_states is not None or self.cross_attention_mask is None:
             cross_attention_mask, cross_attention_mask_out = self.cross_attention_mask, self.cross_attention_mask_out
         else:
-            cross_attention_mask=cross_attention_mask[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
-            cross_attention_mask_out=cross_attention_mask_out[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
+            cross_attention_mask=self.cross_attention_mask[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
+            cross_attention_mask_out=self.cross_attention_mask_out[:,:,-1,:].repeat(1, 1, len(input_pos), 1)
         # Pass both freqs_cis and cross_states to all layers
         # Each block type will only use what it needs
         for layer in self.layers:
