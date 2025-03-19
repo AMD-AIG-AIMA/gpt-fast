@@ -1,3 +1,14 @@
-export MODEL_REPO=codellama/CodeLlama-7b-Python-hf
-export DRAFT_MODEL_REPO=PY007/TinyLlama-1.1B-intermediate-step-480k-1T
-time python generate.py --compile  --draft_checkpoint_path checkpoints/$DRAFT_MODEL_REPO/model_int4.g32.pth  --checkpoint_path checkpoints/$MODEL_REPO/model_int4.g32.pth --speculate_k 5 --prompt "Hi my name is" --max_new_tokens 200 --num_samples 50  --temperature 0 --compile_prefill
+#!/bin/bash  
+
+log_dir="logs"
+mkdir -p "$log_dir"
+
+export PYTHONUNBUFFERED=1
+
+set -x
+
+export logfile="$log_dir/lamma11B_vision.log"
+export checkpoint="checkpoints"
+export MODEL_REPO=meta-llama/Llama-3.2-11B-Vision-Instruct
+python evaluate.py --checkpoint_path $checkpoint/model/$MODEL_REPO/model.pth \
+    --bench_name MMMU --max_new_tokens 500 --compile --top_k 1 | tee "$logfile"
