@@ -15,5 +15,5 @@ setup(
     description='A simple, fast, pure PyTorch Llama inference engine with multimodal support',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
-    url='https://github.com/AMD-AIG-AIMA/AMD-gpt-fast',
+    url='https://github.com/AMD-AIG-AIMA/gpt-fast',
 )
