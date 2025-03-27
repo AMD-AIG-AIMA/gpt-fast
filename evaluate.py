@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 from tqdm import tqdm
+import copy
 
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -42,7 +43,7 @@ DTYPE_MAP = {
     "fp32": torch.float32,
     "fp16": torch.float16,
     "int8": torch.int8,
-    "int4": torch.int4,
+    # "int4": torch.int4,
     "fp8": torch.float8_e4m3fn,
     "bf16": torch.bfloat16,    
 }
@@ -87,7 +88,7 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, embedded: Optional[torch.Tensor]=None,
             cross_states: Optional[torch.Tensor]=None, **sampling_kwargs) -> torch.Tensor:
     # input_pos: [B, S]
-    if getattr(model, "cross_attention_mask", None) is not None:
+    if getattr(model, "cross_attention_mask", None) is not None and embedded is not None:
         cross_states = embedded.clone()
         embedded = None
     logits = model(x, input_pos, embedded=embedded, cross_states=cross_states)
@@ -110,7 +111,7 @@ def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torc
             )
             input_pos += 1
             new_tokens.append(next_token.clone())
-            callback(new_tokens[-1])
+            callback(next_token)
             new_probs.append(next_prob.clone())
             cur_token = next_token.clone()
 
@@ -240,6 +241,7 @@ def generate(
     max_cache_size: Optional[int] = None,
     draft_max_cache_size: Optional[int] = None,
     cross_attention_seq_length: Optional[int] = None,
+    start_pos: Optional[dict] = {"target": 0, "draft": 0},
     **sampling_kwargs
 ) -> torch.Tensor:
     """
@@ -286,9 +288,9 @@ def generate(
     prompt = prompt.view(1, -1).repeat(batch_size, 1)
     seq[:, :lengths["input_text_length"]] = prompt
     
-    input_pos = torch.arange(0, lengths["input_embed_length"], device=device)
+    input_pos = torch.arange(start_pos["target"], start_pos["target"] + lengths["input_embed_length"], device=device)
     if is_speculative:
-        draft_input_pos = torch.arange(0, lengths["draft_input_embed_length"], device=draft_model._device)
+        draft_input_pos = torch.arange(start_pos["draft"], start_pos["draft"] + lengths["draft_input_embed_length"], device=draft_model._device)
 
     with TimeProfiler("Prefill", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
         profiler.set_tokens_processed(1)
@@ -297,8 +299,8 @@ def generate(
         else:
             next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
         if is_speculative:
+            draft_device = draft_model._device
             if draft_multimodal:
-                draft_device = draft_model._device
                 prefill(draft_model, draft_prompt.view(batch_size, -1).to(draft_device),
                         draft_input_pos.to(draft_device), draft_embedded, **sampling_kwargs)
             elif multimodal:
@@ -312,6 +314,7 @@ def generate(
     input_pos = torch.tensor([lengths["input_embed_length"]], device=device, dtype=torch.int)
     
     accept_counts = [0] * (speculate_k + 1)
+    acceptance_lengths = []
 
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
@@ -326,6 +329,7 @@ def generate(
             )
 
             accept_counts[len(next_tokens) - 1] += 1
+            acceptance_lengths.append(len(next_tokens) - 1)
             num_added = min(lengths["embed_seq_length"] - input_pos - 1, len(next_tokens))
             if not multimodal:
                 seq[:,input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
@@ -365,7 +369,8 @@ def generate(
 
     generate_stats = {
         'accept_counts': accept_counts,
-        'prefill_time': prefill_time
+        'prefill_time': prefill_time,
+        'acceptance_lengths': acceptance_lengths
     }
     
     # print('after: ', seq)
@@ -380,8 +385,156 @@ def encode_tokens(tokenizer, string, bos=True, device=default_device):
     return torch.tensor(tokens, dtype=torch.int, device=device)
 
 
+def process_one_question(question, model, tokenizer, conv, max_new_tokens, temperature, top_k,
+                     draft_model, speculate_k, device, vision_modules=None,
+                     draft_vision_modules=None, max_cache_size=None, draft_max_cache_size=None, 
+                     cross_attention_seq_length=None, mm_prune_method=None, mm_prune_ratio=0.0, 
+                     turn=0, start_pos={"target": 0, "draft": 0}, stream_callback=None):
+    is_speculative = draft_model is not None
+    multimodal = vision_modules is not None
+    draft_multimodal = draft_vision_modules is not None
+    result = {}
+
+    stop_token_ids_set = set(conv.stop_token_ids)
+    stop_token_ids_tensor = torch.tensor(conv.stop_token_ids, device=device)
+    # Create an optimized callback function that handles both single tokens and batches
+    def token_callback(tokens):
+        # Handle the case where tokens is a single token tensor
+        if tokens.numel() == 1:
+            if stream_callback:
+                stream_callback(tokens, acceptance_length=0)
+            if tokens.item() in stop_token_ids_set:
+                return True
+            return False
+        
+        # Handle batch of tokens with vectorized operation
+        if stream_callback:
+            stream_callback(tokens, acceptance_length=len(tokens))
+        if conv.stop_token_ids:
+            # Check if any token in the batch is a stop token
+            is_stop = torch.isin(tokens, stop_token_ids_tensor.to(tokens.device))
+            return is_stop.any().item()
+        return False
+
+    # Add the user's message to the conversation
+    conv.append_message(conv.roles[0], question['turns'][turn])
+    
+    # Get the prompt for processing - get only the latest turn
+    if len(conv.messages) < 2:
+        prompt = conv.get_prompt_for_generation()
+    else:
+        # For custom HF template, we'll need to handle this differently
+        # Create a temporary conversation that has only the system message and current user message
+        temp_conv = copy.deepcopy(conv)
+        temp_conv.messages = [conv.messages[-1]]
+        temp_conv.system_message = None
+        prompt = temp_conv.get_prompt()
+        if conv.bos_token and prompt.startswith(conv.bos_token):
+            prompt = prompt[len(conv.bos_token):]
+    
+    if not multimodal:
+        encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
+        embedded, draft_encoded, draft_embedded = None, None, None
+        start_pos["target"] += encoded.shape[1]
+        start_pos["draft"] += encoded.shape[1]
+    else:
+        with TimeProfiler("Embedding"):
+            with torch.inference_mode():
+                images = question.get('images',[])
+                encoded, embedded = vision_modules(
+                    prompt=prompt, tokenizer=tokenizer, images=images,
+                    embed_tokens=model.tok_embeddings, 
+                )
+                if isinstance(encoded, BatchFeature):
+                    if 'image_grid_thw' in encoded:
+                        model.image_grid_thw = encoded['image_grid_thw']
+                    encoded = encoded['input_ids']
+                if len(conv.messages)<2:
+                    model.cross_attention_mask = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)
+                    model.cross_attention_mask_out = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
+                start_pos["target"] += encoded.shape[1] if (model.cross_attention_mask is not None or embedded is None) else embedded.shape[1]
+                if is_speculative and draft_multimodal:
+                    # Set temporary default device for vision modules loading
+                    if model._device != draft_model._device:
+                        torch.set_default_device(draft_model._device)
+                    draft_prompt, draft_embedded = draft_vision_modules(
+                        prompt=prompt, tokenizer=tokenizer, images=images,
+                        embed_tokens=draft_model.tok_embeddings, 
+                        prune_method=mm_prune_method, prune_ratio=mm_prune_ratio,
+                    )
+                    # Reset default device
+                    torch.set_default_device(device)
+                    if isinstance(draft_prompt, BatchFeature):
+                        if 'image_grid_thw' in draft_prompt:
+                            draft_model.image_grid_thw = draft_prompt['image_grid_thw']
+                        draft_prompt = draft_prompt['input_ids']
+                    draft_encoded = None
+                    if len(conv.messages)<2:
+                        draft_model.cross_attention_mask = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)  
+                        draft_model.cross_attention_mask_out = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
+                    start_pos["draft"] += encoded.shape[1] if (draft_model.cross_attention_mask is not None or draft_embedded is None) else draft_embedded.shape[1]
+                elif is_speculative and not draft_multimodal:
+                    # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
+                    draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=draft_model._device)
+                    draft_embedded = None
+                    draft_prompt = None
+                    start_pos["draft"] += draft_encoded.shape[0]
+                else:
+                    draft_encoded, draft_embedded, draft_prompt = None, None, None
+                encoded = encoded.squeeze(0)
+    
+    start_time = time.time()
+    with TimeProfiler("generate"):
+        output, metrics = generate(
+            model,
+            encoded,
+            max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            interactive=False,
+            batch_size=1,
+            draft_model=draft_model,
+            speculate_k=speculate_k,
+            callback=token_callback,
+            embedded=embedded,
+            draft_prompt=draft_prompt,
+            draft_encoded=draft_encoded,
+            draft_embedded=draft_embedded,
+            max_cache_size = max_cache_size,
+            draft_max_cache_size = draft_max_cache_size,
+            cross_attention_seq_length=cross_attention_seq_length,
+        )
+    end_time = time.time()
+    output_ids = output[0][len(encoded):]
+    if conv.stop_token_ids:
+        stop_token_ids_index = [i for i, id in enumerate(output_ids) if id in conv.stop_token_ids]
+        if stop_token_ids_index:
+            output_ids = output_ids[:stop_token_ids_index[0]]
+
+    generated_text = tokenizer.decode(output_ids.tolist())
+    
+    if conv.stop_str:
+        stop_str_index = generated_text.find(conv.stop_str)
+        if stop_str_index != -1:
+            generated_text = generated_text[:stop_str_index]
+    
+    generated_text = generated_text.strip()
+    start_pos["target"] += len(output_ids)
+    if is_speculative:
+        start_pos["draft"] += len(output_ids)
+
+    result['walltime'] = end_time - start_time - metrics['prefill_time']
+    result['tokens_generated'] = len(output[0]) - len(encoded)
+    result['speed'] = (result['tokens_generated'] - 1)/ result['walltime']
+    result['accept_counts'] = metrics['accept_counts']
+    result['generated_text'] = generated_text
+    result['prefill_time'] = metrics['prefill_time']
+    result['acceptance_lengths'] = metrics['acceptance_lengths']
+    return start_pos, result
+
+
 def process_questions(questions, model, tokenizer, conv, system_message, max_new_tokens, temperature, top_k,
-                     draft_model, speculate_k, device, multimodal=False, vision_modules=None,
+                     draft_model, speculate_k, device, vision_modules=None,
                      draft_vision_modules=None, max_cache_size=None, draft_max_cache_size=None, cross_attention_seq_length=None,
                      collect_metrics=False, eval_info={}, mm_prune_method=None, mm_prune_ratio=0.0):
     """Process a list of questions through the model and return results.
@@ -412,7 +565,6 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
         List of results if collect_metrics=True, otherwise None
     """
     is_speculative = draft_model is not None
-    draft_multimodal = draft_vision_modules is not None
     results = [] if collect_metrics else None
     speeds = [] if collect_metrics else None
 
@@ -424,135 +576,33 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
         new_tokens = []
         wall_time = []
         prefill_time = []
-
-        stop_token_ids_set = set(conv.stop_token_ids)
-        stop_token_ids_tensor = torch.tensor(conv.stop_token_ids, device=device)
-        # Create an optimized callback function that handles both single tokens and batches
-        def token_callback(tokens):
-            # Handle the case where tokens is a single token tensor
-            if tokens.numel() == 1:
-                if tokens.item() in stop_token_ids_set:
-                    return True
-                return False
-            
-            # Handle batch of tokens with vectorized operation
-            if conv.stop_token_ids:
-                # Check if any token in the batch is a stop token
-                is_stop = torch.isin(tokens, stop_token_ids_tensor.to(tokens.device))
-                return is_stop.any().item()
-            return False
-        
+        accept_counts = []
+        start_pos = {"target": 0, "draft": 0}
         for j in range(len(question["turns"])):
-            qs = question["turns"][j]
-            conv.append_message(conv.roles[0], qs)
-            conv.append_message(conv.roles[1], None)
-            prompt = conv.get_prompt()
+            start_pos, result = process_one_question(question, model, tokenizer, conv, max_new_tokens, temperature, top_k,
+                                draft_model, speculate_k, device, vision_modules,
+                                draft_vision_modules, max_cache_size, draft_max_cache_size, cross_attention_seq_length,
+                                mm_prune_method, mm_prune_ratio, j, start_pos)
             
-            if not multimodal:
-                encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
-                embedded, draft_encoded, draft_embedded = None, None, None
-            else:
-                with TimeProfiler("Embedding"):
-                    with torch.inference_mode():
-                        images = question.get('images',[])
-                        encoded, embedded = vision_modules(
-                            prompt=prompt, tokenizer=tokenizer, images=images,
-                            embed_tokens=model.tok_embeddings, 
-                        )
-                        if isinstance(encoded, BatchFeature):
-                          if 'image_grid_thw' in encoded:
-                              model.image_grid_thw = encoded['image_grid_thw']
-                          encoded = encoded['input_ids']
-                        model.cross_attention_mask = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)
-                        model.cross_attention_mask_out = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
-                        if is_speculative and draft_multimodal:
-                            # Set temporary default device for vision modules loading
-                            if model._device != draft_model._device:
-                                torch.set_default_device(draft_model._device)
-                            draft_prompt, draft_embedded = draft_vision_modules(
-                                prompt=prompt, tokenizer=tokenizer, images=images,
-                                embed_tokens=draft_model.tok_embeddings, 
-                                prune_method=mm_prune_method, prune_ratio=mm_prune_ratio,
-                            )
-                            # Reset default device
-                            torch.set_default_device(device)
-                            if isinstance(draft_prompt, BatchFeature):
-                                if 'image_grid_thw' in draft_prompt:
-                                    draft_model.image_grid_thw = draft_prompt['image_grid_thw']
-                                draft_prompt = draft_prompt['input_ids']
-                            draft_encoded = None
-                            draft_model.cross_attention_mask = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)  
-                            draft_model.cross_attention_mask_out = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
-                        elif is_speculative and not draft_multimodal:
-                            # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
-                            draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=draft_model._device)
-                            draft_embedded = None
-                            draft_prompt = None
-                        else:
-                            draft_encoded, draft_embedded, draft_prompt = None, None, None
-                        encoded = encoded.squeeze(0)
-            
-            start_time = time.time()
-            with TimeProfiler("generate"):
-                output, metrics = generate(
-                    model,
-                    encoded,
-                    max_new_tokens,
-                    temperature=temperature,
-                    top_k=top_k,
-                    interactive=False,
-                    batch_size=1,
-                    draft_model=draft_model,
-                    speculate_k=speculate_k,
-                    callback=token_callback,
-                    embedded=embedded,
-                    draft_prompt=draft_prompt,
-                    draft_encoded=draft_encoded,
-                    draft_embedded=draft_embedded,
-                    max_cache_size = max_cache_size,
-                    draft_max_cache_size = draft_max_cache_size,
-                    cross_attention_seq_length=cross_attention_seq_length,
-                )
-            end_time = time.time()
-            model.clear_cache()
-            if is_speculative:
-                draft_model.clear_cache()
-            output_ids = output[0][len(encoded):]
-            if conv.stop_token_ids:
-                stop_token_ids_index = [i for i, id in enumerate(output_ids) if id in conv.stop_token_ids]
-                if stop_token_ids_index:
-                    output_ids = output_ids[:stop_token_ids_index[0]]
+            turns.append(result['generated_text'])
+            new_tokens.append(result['tokens_generated'])
+            wall_time.append(result['walltime'])
+            prefill_time.append(result['prefill_time'])
+            accept_counts.append(result['accept_counts'])
 
-            generated_text = tokenizer.decode(output_ids.tolist())
-            
-            if conv.stop_str:
-                stop_str_index = generated_text.find(conv.stop_str)
-                if stop_str_index != -1:
-                    generated_text = generated_text[:stop_str_index]
-            
-            generated_text = generated_text.strip()
-            
-            if collect_metrics:
-                walltime = end_time - start_time - metrics['prefill_time']
-                tokens_generated = len(output[0]) - len(encoded)
-                speed = (tokens_generated - 1)/ walltime
-                
-                turns.append(generated_text)
-                new_tokens.append(tokens_generated)
-                wall_time.append(walltime)
-                speeds.append(speed)
-                prefill_time.append(metrics['prefill_time'])
-            
-            conv.messages[-1][-1] = generated_text
+        # Clear cache after processing this question
+        model.clear_cache()
+        if is_speculative:
+            draft_model.clear_cache()
         if collect_metrics:
             results.append({
               'question_id': question.get('question_id', len(results)),
               'turns': turns,
               'tokens_generated': new_tokens,
               'walltime': wall_time,
-              'prefill_time': metrics['prefill_time'],
+              'prefill_time': prefill_time,
               'speed': speeds[-len(turns):],
-              'accept_counts': metrics['accept_counts'] if is_speculative else None,
+              'accept_counts': accept_counts if is_speculative else None,
               'category': question.get('cat', None),
               'model': eval_info.get('model', ''),
               'draft_model': eval_info.get('draft_model', ''),

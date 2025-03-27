@@ -50,6 +50,7 @@ class VisionModule(ABC, nn.Module):
             
         self._is_loaded = False
         self.to(self._device)
+        self.image_token = None
     
 
     @abstractmethod
@@ -185,6 +186,7 @@ class LlavaVisionModule(VisionModule):
             self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=dtype))
         if checkpoint_path is not None:
             self.load_checkpoint(Path(checkpoint_path))
+        self.image_token = "<image>"
 
     def preprocess_images(self, images):
         pass
@@ -251,6 +253,7 @@ class Qwen2_5VisionModule(VisionModule):
         self.min_pixels = vision_config.min_pixels[0]
         self.max_pixels = vision_config.max_pixels[0]
         self.max_ratio = vision_config.max_ratio
+        self.image_token = "<image>"
         
     def preprocess_images(self, images, prune_ratio):
         processed_images = []
@@ -339,6 +342,7 @@ class LlamaVisionModule(VisionModule):
         self.processor = MllamaProcessor.from_pretrained(str(checkpoint_path.parent))
         if checkpoint_path is not None:
             self.load_checkpoint(Path(checkpoint_path))
+        self.image_token = "<|image|>"
 
     def preprocess_images(self, images):
         pass

@@ -19,9 +19,11 @@ class HFConversationTemplate:
         try:
             eos_token_id = processor.eos_token_id
             eos_token = processor.eos_token
+            self.bos_token = processor.bos_token if hasattr(processor, "bos_token") else None
         except:
             eos_token_id = processor.tokenizer.eos_token_id
             eos_token = processor.tokenizer.eos_token
+            self.bos_token = processor.tokenizer.bos_token if hasattr(processor.tokenizer, "bos_token") else None
         self.stop_token_ids = [eos_token_id]
         self.stop_str = eos_token
 
@@ -29,10 +31,10 @@ class HFConversationTemplate:
         self.system_message = message
 
     def append_message(self, role, message):
-        if message is not None and role == "user":
+        if message is not None:
             self.messages.append({"role": role, "content": [{"type": "text", "text": message}]})
 
-    def get_prompt(self):
+    def get_prompt(self, add_generation_prompt=False):
         all_messages = []
         if self.system_message:
             all_messages.append({
@@ -40,7 +42,10 @@ class HFConversationTemplate:
                 "content": self.system_message
             })
         all_messages.extend(self.messages)
-        return self.processor.apply_chat_template(all_messages, add_generation_prompt=True, tokenize=False)
+        return self.processor.apply_chat_template(all_messages, add_generation_prompt=add_generation_prompt, tokenize=False)
+    
+    def get_prompt_for_generation(self):            
+        return self.get_prompt(add_generation_prompt=True)
 
 def get_model_template(model_name):
     for key, template in MODEL_TO_TEMPLATE.items():
