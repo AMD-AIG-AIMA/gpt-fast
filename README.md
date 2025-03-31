@@ -64,7 +64,7 @@ To run speculative decoding, add the draft models arguments as below:
 
 To benefit from `torch.compile()` speed-ups, you can use the `--compile` flag. Since gpt-fast benefits from a fixed length kv-cache size, it is recommended to use a large enough cache size for both target and the draft models as below:
 
-`python evaluate.py --bench_name MMMU --checkpoint_path  <checkpoint_path>/<path_to_model>/model.pth --draft_checkpoint_path <checkpoint_path>/<path_to_draft_model>/model.pth --speculate_k <#_of_draft_tokens> --max_cache_size <target_model_cache_size> --draft_max_cache_size <target_model_cache_size>`
+`python evaluate.py --bench_name MMMU --checkpoint_path  <checkpoint_path>/<path_to_model>/model.pth --draft_checkpoint_path <checkpoint_path>/<path_to_draft_model>/model.pth --speculate_k <#_of_draft_tokens> --compile --max_cache_size <target_model_cache_size> --draft_max_cache_size <target_model_cache_size>`
 
 For Llama 3.2 series of models, it is also prefered to set --cross_attention_seq_length as well.
 
