@@ -11,12 +11,10 @@ from pathlib import Path
 import re
 from dataclasses import asdict
 
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
-from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLVisionConfig
 
 from multimodal.llava.preprocessing import (process_images, 
                                             tokenizer_image_token, 
-                                            prepare_inputs_labels_for_multimodal, 
+                                            get_image_features, 
                                             embed_multimodal_tokens, 
                                             IMAGE_TOKEN_INDEX)
 from multimodal.qwen2_5vl.preprocessing import process_prompt_for_qwen2_5vl, get_processor, prepare_input_embeds
@@ -52,6 +50,7 @@ class VisionModule(ABC, nn.Module):
             
         self._is_loaded = False
         self.to(self._device)
+        self.image_token = None
     
 
     @abstractmethod
@@ -187,6 +186,7 @@ class LlavaVisionModule(VisionModule):
             self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=dtype))
         if checkpoint_path is not None:
             self.load_checkpoint(Path(checkpoint_path))
+        self.image_token = "<image>"
 
     def preprocess_images(self, images):
         pass
@@ -207,13 +207,11 @@ class LlavaVisionModule(VisionModule):
                             IMAGE_TOKEN_INDEX,
                             return_tensors="pt"
                         ).unsqueeze(0).to(self._device)
-        image_features = prepare_inputs_labels_for_multimodal(input_ids, None, None, None, None, 
+        image_features = get_image_features(input_ids,
                                     image_tensor,
                                     config=self.config,
                                     vision_tower=self.vision_tower,
                                     mm_projector=self.mm_projector,
-                                    embed_tokens=embed_tokens,
-                                    device=self._device,
                                     modalities=["image"],
                                     image_newline=self.image_newline, 
                                     image_sizes=[img.size for img in images])
@@ -237,6 +235,12 @@ class Qwen2_5VisionModule(VisionModule):
           device: Optional[Union[str, torch.device]] = None,
         ):
         super().__init__(config, dtype, device)
+        try:
+            from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
+            from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLVisionConfig
+        except:
+            raise ImportError(f"Qwen2.5 VL series of models are not supported with current version of transformers. Update transformers to the latest version.")
+        
         name = Path(checkpoint_path).parent.name
         self._processor_id = Path(*Path(checkpoint_path).parent.parts[-2:])
         config_dc = QwenVisionModelArgs.from_name(name)
@@ -249,6 +253,7 @@ class Qwen2_5VisionModule(VisionModule):
         self.min_pixels = vision_config.min_pixels[0]
         self.max_pixels = vision_config.max_pixels[0]
         self.max_ratio = vision_config.max_ratio
+        self.image_token = "<image>"
         
     def preprocess_images(self, images, prune_ratio):
         processed_images = []
@@ -337,6 +342,7 @@ class LlamaVisionModule(VisionModule):
         self.processor = MllamaProcessor.from_pretrained(str(checkpoint_path.parent))
         if checkpoint_path is not None:
             self.load_checkpoint(Path(checkpoint_path))
+        self.image_token = "<|image|>"
 
     def preprocess_images(self, images):
         pass

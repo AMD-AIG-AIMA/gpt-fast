@@ -80,26 +80,19 @@ def add_token_per_frame(image_feature, image_newline):
     return image_feature
 
 
-def prepare_inputs_labels_for_multimodal(input_ids, 
-                                         position_ids, 
-                                         attention_mask, 
-                                         past_key_values, 
-                                         labels, 
-                                         images,
-                                         config,
-                                         vision_tower,
-                                         mm_projector,
-                                         embed_tokens,
-                                         device,
-                                         modalities=["image"],
-                                         image_newline=None, 
-                                         image_sizes=None,
-                                         faster_token=None,
-                                         all_faster_video_features=[],
-                                         training=False):
+def get_image_features(input_ids,
+                        images,
+                        config,
+                        vision_tower,
+                        mm_projector,
+                        modalities=["image"],
+                        image_newline=None, 
+                        image_sizes=None,
+                        faster_token=None,
+                        all_faster_video_features=[]):
     # rank_print(modalities)
     if vision_tower is None or images is None or input_ids.shape[1] == 1:
-        return input_ids, position_ids, attention_mask, past_key_values, None, labels
+        return input_ids
 
     if isinstance(modalities, str):
         modalities = [modalities]
@@ -277,13 +270,6 @@ def embed_multimodal_tokens(input_ids,
                             embed_tokens, 
                             device, 
                             modalities=["image"]):
-    # Let's just add dummy tensors if they do not exist,
-    # it is a headache to deal with None all the time.
-    # But it is not ideal, and if you have a better idea,
-    # please open an issue / submit a PR, thanks.
-    _labels = labels
-    _position_ids = position_ids
-    _attention_mask = attention_mask
     if attention_mask is None:
         attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
     else:
@@ -354,10 +340,6 @@ def embed_multimodal_tokens(input_ids,
 
     new_input_embeds = [x[:tokenizer_model_max_length] for x, modality in zip(new_input_embeds, modalities)]
     new_labels = [x[:tokenizer_model_max_length] for x, modality in zip(new_labels, modalities)]
-    # TODO: Hard code for control loss spike
-    # if tokenizer_model_max_length is not None:
-    #     new_input_embeds = [x[:4096] if modality != "video" else x[:tokenizer_model_max_length] for x, modality in zip(new_input_embeds, modalities)]
-    #     new_labels = [x[:4096] if modality != "video" else x[:tokenizer_model_max_length] for x, modality in zip(new_labels, modalities)]
 
     # Combine them
     max_len = max(x.shape[0] for x in new_input_embeds)
@@ -385,61 +367,8 @@ def embed_multimodal_tokens(input_ids,
                 position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
 
     new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
-    # rank0_print("tokenizer padding")
-
-    # if _labels is None:
-    #     new_labels = None
-    # else:
-    #     new_labels = new_labels_padded
-
-    # if _attention_mask is None:
-    #     attention_mask = None
-    # else:
-    #     attention_mask = attention_mask.to(dtype=_attention_mask.dtype)
-
-    # if _position_ids is None:
-    #     position_ids = None
-    # if getattr(config, "use_pos_skipping", False) and training:
-    #     position_ids = torch.arange(new_input_embeds.size(1), device=new_input_embeds.device).unsqueeze(0).to(new_input_embeds.device)
-    #     split_position = random.randint(0, new_input_embeds.size(1))
-    #     left_add = random.randint(0, config.pos_skipping_range)
-    #     right_add = random.randint(left_add, config.pos_skipping_range)
-    #     position_ids[:, :split_position] += left_add
-    #     position_ids[:, split_position:] += right_add
-    # import pdb; pdb.set_trace()
-    # rank0_print("Finish preparing")
     return new_input_embeds
 
-
-# def embed_tokens_multimodal(
-#         prompt,
-#         tokenizer,
-#         config,
-#         device,
-#         images,
-#         vision_modules,
-#         embed_tokens,
-#         dtype=torch.float16
-#     ):
-#     image_tensor = process_images(images, vision_modules.vision_tower.image_processor, config)
-#     image_tensor = [_image.to(dtype=dtype, device=device) for _image in image_tensor]
-#     input_ids = tokenizer_image_token(
-#                         prompt, 
-#                         tokenizer,
-#                         IMAGE_TOKEN_INDEX,
-#                         return_tensors="pt"
-#                     ).unsqueeze(0).to(device)
-#     embeds = prepare_inputs_labels_for_multimodal(input_ids, None, None, None, None, 
-#                                 image_tensor,
-#                                 config=config,
-#                                 vision_tower=vision_modules.vision_tower,
-#                                 mm_projector=vision_modules.mm_projector,
-#                                 embed_tokens=embed_tokens,
-#                                 device=device,
-#                                 modalities=["image"],
-#                                 image_newline=vision_modules.image_newline, 
-#                                 image_sizes=[img.size for img in images])
-#     return input_ids, embeds[4].to(dtype=dtype)
 
 ####### Utils ########
 def unpad_image(tensor, original_size):
