@@ -434,9 +434,9 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
     
     if not multimodal:
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
-        embedded, draft_encoded, draft_embedded = None, None, None
-        start_pos["target"] += encoded.shape[1]
-        start_pos["draft"] += encoded.shape[1]
+        embedded, draft_encoded, draft_embedded, draft_prompt = None, None, None, None
+        start_pos["target"] += encoded.shape[0]
+        start_pos["draft"] += encoded.shape[0]
     else:
         with TimeProfiler("Embedding"):
             with torch.inference_mode():
@@ -729,7 +729,7 @@ def main(
     process_questions(
         questions[:warmup], model, tokenizer, conv, system_message,
         max_new_tokens, temperature, top_k, draft_model, speculate_k,
-        device, multimodal, vision_modules, draft_vision_modules,
+        device, vision_modules, draft_vision_modules,
         max_cache_size, draft_max_cache_size, cross_attention_seq_length, 
         collect_metrics=False, mm_prune_method=mm_prune_method, 
         mm_prune_ratio=mm_prune_ratio
@@ -754,7 +754,7 @@ def main(
     results = process_questions(
         questions, model, tokenizer, conv, system_message,
         max_new_tokens, temperature, top_k, draft_model, speculate_k,
-        device, multimodal, vision_modules, draft_vision_modules,
+        device, vision_modules, draft_vision_modules,
         max_cache_size, draft_max_cache_size, cross_attention_seq_length, 
         collect_metrics=True, eval_info=eval_info,
         mm_prune_method=mm_prune_method, mm_prune_ratio=mm_prune_ratio
