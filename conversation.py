@@ -32,7 +32,7 @@ class HFConversationTemplate:
 
     def append_message(self, role, message):
         if message is not None:
-            self.messages.append({"role": role, "content": [{"type": "text", "text": message}]})
+            self.messages.append({"role": role, "content": message})
 
     def get_prompt(self, add_generation_prompt=False):
         all_messages = []

@@ -314,6 +314,8 @@ def generate(
             else:
                 prefill(draft_model, prompt.view(batch_size, -1).to(draft_device),
                         draft_input_pos.to(draft_device), **sampling_kwargs)
+    if streaming:
+        yield next_token
     prefill_time, prefill_tokens_per_second = profiler.get_last_call_stats()
     seq[:, lengths["input_text_length"]] = next_token.squeeze()
     input_pos = torch.tensor([lengths["input_embed_length"]], device=device, dtype=torch.int)
@@ -345,10 +347,10 @@ def generate(
             draft_input_pos = draft_input_pos + num_added
             next_token = next_tokens[-1]
             should_stop = callback(next_tokens[: num_added,])
-            if streaming:
-                yield next_tokens[: num_added]
             if should_stop:
                 break
+            if streaming:
+                yield next_tokens[: num_added]
         text_input_pos = input_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
         seq = seq[:, :text_input_pos]
     else:
@@ -366,10 +368,10 @@ def generate(
                     input_pos += 1
                     new_tokens.append(next_token.clone())
                     should_stop = callback(next_token)
-                    if streaming:
-                        yield next_token
                     if should_stop:
                         break
+                    if streaming:
+                        yield next_token
                     new_probs.append(next_prob.clone())
                     cur_token = next_token.clone()
         end = len(new_tokens) + lengths["input_text_length"] +1
@@ -379,7 +381,9 @@ def generate(
     generate_stats = {
         'accept_counts': accept_counts,
         'prefill_time': prefill_time,
-        'acceptance_lengths': acceptance_lengths
+        'acceptance_lengths': acceptance_lengths,
+        'target_input_pos': input_pos.item(),
+        'draft_input_pos': draft_input_pos.item() if is_speculative else 0
     }
     
     # Only return sequence and stats if not streaming (if callback is a generator, we've been yielding)
@@ -434,15 +438,13 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
         temp_conv = copy.deepcopy(conv)
         temp_conv.messages = [conv.messages[-1]]
         temp_conv.system_message = None
-        prompt = temp_conv.get_prompt()
+        prompt = temp_conv.get_prompt_for_generation()
         if conv.bos_token and prompt.startswith(conv.bos_token):
             prompt = prompt[len(conv.bos_token):]
     
     if not multimodal:
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
         embedded, draft_encoded, draft_embedded, draft_prompt = None, None, None, None
-        start_pos["target"] += encoded.shape[0]
-        start_pos["draft"] += encoded.shape[0]
     else:
         with TimeProfiler("Embedding"):
             with torch.inference_mode():
@@ -458,7 +460,6 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
                 if len(conv.messages)<2:
                     model.cross_attention_mask = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)
                     model.cross_attention_mask_out = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
-                start_pos["target"] += encoded.shape[1] if (model.cross_attention_mask is not None or embedded is None) else embedded.shape[1]
                 if is_speculative and draft_multimodal:
                     # Set temporary default device for vision modules loading
                     if model._device != draft_model._device:
@@ -478,13 +479,11 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
                     if len(conv.messages)<2:
                         draft_model.cross_attention_mask = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)  
                         draft_model.cross_attention_mask_out = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
-                    start_pos["draft"] += encoded.shape[1] if (draft_model.cross_attention_mask is not None or draft_embedded is None) else draft_embedded.shape[1]
                 elif is_speculative and not draft_multimodal:
                     # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
                     draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=draft_model._device)
                     draft_embedded = None
                     draft_prompt = None
-                    start_pos["draft"] += draft_encoded.shape[0]
                 else:
                     draft_encoded, draft_embedded, draft_prompt = None, None, None
                 encoded = encoded.squeeze(0)
@@ -548,9 +547,6 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
             generated_text = generated_text[:stop_str_index]
     
     generated_text = generated_text.strip()
-    start_pos["target"] += len(output_ids)
-    if is_speculative:
-        start_pos["draft"] += len(output_ids)
 
     result['walltime'] = end_time - start_time - metrics['prefill_time']
     result['tokens_generated'] = len(output[0]) - len(encoded)
@@ -559,6 +555,9 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
     result['generated_text'] = generated_text
     result['prefill_time'] = metrics['prefill_time']
     result['acceptance_lengths'] = metrics['acceptance_lengths']
+    start_pos['target'] += metrics['target_input_pos']
+    if is_speculative:
+        start_pos['draft'] += metrics['draft_input_pos']
     return start_pos, result
 
 def process_questions(questions, model, tokenizer, conv, system_message, max_new_tokens, temperature, top_k,
@@ -621,6 +620,7 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
             wall_time.append(result['walltime'])
             prefill_time.append(result['prefill_time'])
             accept_counts.append(result['accept_counts'])
+            speeds.append(result['speed'])
 
         # Clear cache after processing this question
         model.clear_cache()
