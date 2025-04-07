@@ -1,14 +1,4 @@
-MODEL_TO_TEMPLATE = {
-    "llama-2-7b-chat": "llama-2-chat",
-    "llama-2-13b-chat": "llama-2-chat",
-    "llama-2-70b-chat": "llama-2-chat",
-    "mistral-7b-instruct": "mistral",
-    "mixtral-8x7b-instruct": "mistral",
-    "openchat-3.5": "openchat",
-    "qwen2": "qwen2",
-    # Add more mappings as needed
-}
-from fastchat.model import get_conversation_template as get_fastchat_template
+from transformers import AutoProcessor
 
 class HFConversationTemplate:
     def __init__(self, processor):
@@ -47,20 +37,10 @@ class HFConversationTemplate:
     def get_prompt_for_generation(self):            
         return self.get_prompt(add_generation_prompt=True)
 
-def get_model_template(model_name):
-    for key, template in MODEL_TO_TEMPLATE.items():
-        if key in model_name.lower():
-            return template
-    return -1  # Default to llama-2-chat if no match found
-
 def get_conversation_template(checkpoint_path):
-    # Try to find the model template in FastChat
-    model_template = get_model_template(checkpoint_path.parent.name)
-    if model_template != -1:
-        return get_fastchat_template(model_template)
-    else:
-        # Fallback to custom template with HF processor
-        from transformers import AutoProcessor
+    try:
         model_id = f"{checkpoint_path.parent.parent.name}/{checkpoint_path.parent.name}"
         processor = AutoProcessor.from_pretrained(model_id)
         return HFConversationTemplate(processor)
+    except:
+        raise NotImplementedError(f"The HF processor is not implemented for model {checkpoint_path}! Add the template manually!")

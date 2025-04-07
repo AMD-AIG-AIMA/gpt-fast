@@ -430,25 +430,23 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
     conv.append_message(conv.roles[0], question['turns'][turn])
     
     # Get the prompt for processing - get only the latest turn
-    if len(conv.messages) < 2:
+    if len(conv.messages) == 1:
         prompt = conv.get_prompt_for_generation()
     else:
-        # For custom HF template, we'll need to handle this differently
-        # Create a temporary conversation that has only the system message and current user message
+        # For multiturn conversation, we only need the last conversation
+        full_prompt = conv.get_prompt_for_generation()
         temp_conv = copy.deepcopy(conv)
-        temp_conv.messages = [conv.messages[-1]]
-        temp_conv.system_message = None
-        prompt = temp_conv.get_prompt_for_generation()
-        if conv.bos_token and prompt.startswith(conv.bos_token):
-            prompt = prompt[len(conv.bos_token):]
+        temp_conv.messages = conv.messages[:-1]
+        past_prompt = temp_conv.get_prompt()
+        prompt = full_prompt[len(past_prompt):]
     
-    if not multimodal:
+    images = question.get('images',[])
+    if not multimodal or len(images)==0:
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
         embedded, draft_encoded, draft_embedded, draft_prompt = None, None, None, None
     else:
         with TimeProfiler("Embedding"):
             with torch.inference_mode():
-                images = question.get('images',[])
                 encoded, embedded = vision_modules(
                     prompt=prompt, tokenizer=tokenizer, images=images,
                     embed_tokens=model.tok_embeddings, 
