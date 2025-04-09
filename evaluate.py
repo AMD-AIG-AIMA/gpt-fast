@@ -318,7 +318,7 @@ def generate(
         yield next_token
     prefill_time, prefill_tokens_per_second = profiler.get_last_call_stats()
     seq[:, lengths["input_text_length"]] = next_token.squeeze()
-    input_pos = torch.tensor([lengths["input_embed_length"]], device=device, dtype=torch.int)
+    input_pos = torch.tensor([input_pos[-1].item()+1], device=device, dtype=torch.int)
     
     accept_counts = [0] * (speculate_k + 1)
     acceptance_lengths = []
@@ -326,7 +326,7 @@ def generate(
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
         draft_input_pos = lengths["draft_input_embed_length"]
-        max_pos = lengths["embed_seq_length"] - 1 - (speculate_k + 1)
+        max_pos = input_pos + lengths["embed_seq_length"] - 1 - (speculate_k + 1)
         while input_pos < max_pos:
             cur_token = next_token.view(())
 

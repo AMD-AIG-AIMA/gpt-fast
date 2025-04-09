@@ -470,7 +470,7 @@ with gr.Blocks(css=custom_css) as demo:
         bot, [chatbot, temperature, top_k, use_speculative, gs], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
     )
     
-    clear_button.click(clear, [chatbot, gs], [chatbot, image_gallery, speed_box, acceptance_box, tokens_box, gs], queue=False)
+    clear_button.click(clear, [chatbot, gs], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=False)
     
     send_event = send_button.click(user, [msg, chatbot, gs, img_input], [msg, chatbot, gs], queue=False).then(
         bot, [chatbot, temperature, top_k, use_speculative, gs], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
