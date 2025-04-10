@@ -183,10 +183,16 @@ def bot(history, temperature, top_k, use_speculative, session_state, streaming=T
                 while True:
                     token = next(generator)
                     # Decode the token and add to generated text
-                    token_text = tokenizer.decode(token[0].tolist())
+                    if use_speculative and token.numel() > 1:
+                        token_list = token[0].tolist() if token.dim()>1 else token.tolist()
+                        token_text = tokenizer.decode(token_list[:-1])
+                        last_token = tokenizer.decode(token_list[-1:])
+                        token_text = f"<span style='color: green;'>{token_text}</span>" + last_token 
+                    else:
+                        token_text = tokenizer.decode(token[0].tolist() if token.dim()>1 else token.tolist())
+                    
                     generated_text += token_text
                     tokens_generated += token.numel()
-                    
                     # Update the history for display
                     history[-1][1] = generated_text
                     

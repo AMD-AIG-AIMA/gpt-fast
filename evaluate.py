@@ -326,7 +326,7 @@ def generate(
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
         draft_input_pos = lengths["draft_input_embed_length"]
-        max_pos = input_pos + lengths["embed_seq_length"] - 1 - (speculate_k + 1)
+        max_pos = lengths["embed_seq_length"] - 1 - (speculate_k + 1) - start_pos["target"]
         while input_pos < max_pos:
             cur_token = next_token.view(())
 
@@ -356,7 +356,7 @@ def generate(
     else:
         new_tokens, new_probs = [], []
         cur_token = next_token.view(batch_size, -1)
-        num_new_tokens = max_new_tokens - 1
+        num_new_tokens = max_new_tokens - 1 - start_pos["target"]
         for i in range(num_new_tokens):
             with TimeProfiler("Vanilla Decoding", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
                 profiler.set_tokens_processed(1)
@@ -382,8 +382,8 @@ def generate(
         'accept_counts': accept_counts,
         'prefill_time': prefill_time,
         'acceptance_lengths': acceptance_lengths,
-        'target_input_pos': input_pos.item(),
-        'draft_input_pos': draft_input_pos.item() if is_speculative else 0
+        'target_input_pos': input_pos if is_speculative else input_pos.item(),
+        'draft_input_pos': draft_input_pos if is_speculative else 0
     }
     
     # Only return sequence and stats if not streaming (if callback is a generator, we've been yielding)
