@@ -554,9 +554,9 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
     result['generated_text'] = generated_text
     result['prefill_time'] = metrics['prefill_time']
     result['acceptance_lengths'] = metrics['acceptance_lengths']
-    start_pos['target'] += metrics['target_input_pos']
+    start_pos['target'] = metrics['target_input_pos']
     if is_speculative:
-        start_pos['draft'] += metrics['draft_input_pos']
+        start_pos['draft'] = metrics['draft_input_pos']
     return start_pos, result
 
 def process_questions(questions, model, tokenizer, conv, system_message, max_new_tokens, temperature, top_k,
