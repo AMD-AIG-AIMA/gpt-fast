@@ -282,11 +282,11 @@ def generate(
     device, dtype = prompt.device, prompt.dtype
     # Setup model caches
     with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_cache_size=lengths["max_cache_size"], prompt=prompt,
-                           cross_attention_seq_length=lengths["cross_attention_seq_length"])
+        model.setup_caches(max_batch_size=batch_size, max_cache_size=start_pos["target"]+lengths["max_cache_size"], prompt=prompt,
+                           cross_attention_seq_length=lengths["cross_attention_seq_length"], preserve_history=start_pos["target"]>0)
         if is_speculative and draft_model is not model:
-            draft_model.setup_caches(max_batch_size=batch_size, max_cache_size=lengths["draft_max_cache_size"], prompt=draft_prompt,
-                                     cross_attention_seq_length=lengths["cross_attention_seq_length"])
+            draft_model.setup_caches(max_batch_size=batch_size, max_cache_size=start_pos["draft"]+lengths["draft_max_cache_size"], prompt=draft_prompt,
+                                     cross_attention_seq_length=lengths["cross_attention_seq_length"], preserve_history=start_pos["draft"]>0)
 
     # Initialize sequence tensor
     seq = torch.empty(batch_size, lengths["text_seq_length"], dtype=dtype, device=device)
@@ -325,11 +325,11 @@ def generate(
 
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
-        draft_input_pos = lengths["draft_input_embed_length"]
-        max_pos = lengths["embed_seq_length"] - 1 - (speculate_k + 1) - start_pos["target"]
+        draft_input_pos = start_pos['draft'] + lengths["draft_input_embed_length"]
+        max_pos = lengths["embed_seq_length"] - 1 - (speculate_k + 1) + start_pos["target"]
         while input_pos < max_pos:
             cur_token = next_token.view(())
-
+            adjusted_pos = input_pos - start_pos['target']
             next_tokens = speculative_decode(
                 model, draft_model, cur_token, input_pos, speculate_k, 
                 draft_input_pos, **sampling_kwargs
@@ -337,11 +337,11 @@ def generate(
 
             accept_counts[len(next_tokens) - 1] += 1
             acceptance_lengths.append(len(next_tokens) - 1)
-            num_added = min(lengths["embed_seq_length"] - input_pos - 1, len(next_tokens))
+            num_added = min(lengths["embed_seq_length"] - adjusted_pos - 1, len(next_tokens))
             if not multimodal:
-                seq[:,input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
+                seq[:,adjusted_pos + 1 : adjusted_pos + num_added + 1] = next_tokens[: num_added]
             else:
-                text_input_pos = input_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
+                text_input_pos = adjusted_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
                 seq[:, text_input_pos : text_input_pos + num_added] = next_tokens[: num_added]
             input_pos = input_pos + num_added
             draft_input_pos = draft_input_pos + num_added
@@ -351,12 +351,13 @@ def generate(
                 break
             if streaming:
                 yield next_tokens[: num_added]
-        text_input_pos = input_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
+        # TODO: Check this for cases when stop_id is among before the last token accepted
+        text_input_pos = adjusted_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
         seq = seq[:, :text_input_pos]
     else:
         new_tokens, new_probs = [], []
         cur_token = next_token.view(batch_size, -1)
-        num_new_tokens = max_new_tokens - 1 - start_pos["target"]
+        num_new_tokens = max_new_tokens - 1 + start_pos["target"]
         for i in range(num_new_tokens):
             with TimeProfiler("Vanilla Decoding", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
                 profiler.set_tokens_processed(1)
