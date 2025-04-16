@@ -444,7 +444,11 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
     images = question.get('images',[])
     if not multimodal or len(images)==0:
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
-        embedded, draft_encoded, draft_embedded, draft_prompt = None, None, None, None
+        embedded, draft_encoded, draft_embedded = None, None, None
+        if draft_multimodal and draft_model.mrope:
+            draft_prompt = encoded
+        else:
+            draft_prompt = None
     else:
         with TimeProfiler("Embedding"):
             with torch.inference_mode():
