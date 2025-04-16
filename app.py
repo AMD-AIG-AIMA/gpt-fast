@@ -318,6 +318,12 @@ parser.add_argument(
     default=None, 
     type=int, 
     help="Random seed")
+parser.add_argument(
+    "--draft_device",
+    type=str,
+    default=None,
+    help="Device to use for speculative decoding",
+)
 args = parser.parse_args()
 
 if args.random_seed:
@@ -352,11 +358,12 @@ if multimodal:
 # Load draft model if specified
 draft_model = None
 draft_vision_modules = None
+draft_device = args.draft_device if args.draft_device is not None else args.device
 if args.draft_checkpoint_path:
     print(f"Loading draft model from {args.draft_checkpoint_path}")
-    draft_model = load_model(args.draft_checkpoint_path, args.device, precision, use_tp=False)
+    draft_model = load_model(args.draft_checkpoint_path, draft_device, precision, use_tp=False)
     draft_model.requires_grad_(False)
-    draft_model._device = args.device
+    draft_model._device = draft_device
     
     # Check if draft model is multimodal
     draft_multimodal = getattr(draft_model.config, "mm_config", None) is not None
@@ -368,7 +375,7 @@ if args.draft_checkpoint_path:
             config=draft_model.config.mm_config,
             checkpoint_path=draft_vision_checkpoints,
             dtype=precision,
-            device=args.device
+            device=draft_device
         )
         draft_vision_modules.eval_mode()
 
