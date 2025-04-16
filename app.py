@@ -56,7 +56,7 @@ def warmup(model, tokenizer, vision_modules=None, draft_model=None, draft_vision
         cross_attention_seq_length=cross_seq_len
     )
 
-def bot(history, temperature, top_k, use_speculative, session_state, streaming=True):
+def bot(history, temperature, top_k, use_speculative, session_state, speculate_k=5, streaming=True):
     if not history:
         return history, "0.00 tokens/s", "0.00", "0", session_state
     
@@ -112,7 +112,7 @@ def bot(history, temperature, top_k, use_speculative, session_state, streaming=T
             temperature, 
             top_k, 
             draft_model if use_speculative else None, 
-            args.speculate_k, 
+            speculate_k, 
             args.device,
             vision_modules=vision_modules,
             draft_vision_modules=draft_vision_modules if use_speculative else None,
@@ -138,7 +138,7 @@ def bot(history, temperature, top_k, use_speculative, session_state, streaming=T
                         token_list = token[0].tolist() if token.dim()>1 else token.tolist()
                         token_text = tokenizer.decode(token_list[:-1])
                         last_token = tokenizer.decode(token_list[-1:])
-                        token_text = f"<span style='color: green;'>{token_text}</span>" + last_token 
+                        token_text = f"<span style='color: rgb(0, 124, 151);'>{token_text}</span>" + last_token 
                     else:
                         token_text = tokenizer.decode(token[0].tolist() if token.dim()>1 else token.tolist())
                     
@@ -313,8 +313,15 @@ parser.add_argument(
     default=None,
     help="Maximum cross-attention sequence length for vision models",
 )
+parser.add_argument(
+    "--random_seed", 
+    default=None, 
+    type=int, 
+    help="Random seed")
 args = parser.parse_args()
 
+if args.random_seed:
+    torch.manual_seed(args.random_seed)
 # Initialize model and tokenizer
 print(f"Loading model from {args.checkpoint_path} on {args.device}")
 precision = {"fp16": torch.float16, "fp32": torch.float32, "bf16": torch.bfloat16}[args.dtype]
@@ -373,9 +380,15 @@ warmup(model, tokenizer, vision_modules, draft_model, draft_vision_modules)
 
 custom_css = """
 #speed textarea {
-    color: red;   
-    font-size: 30px; 
-}"""
+    color: rgb(237, 28, 36);   
+    font-size: 25px; 
+}
+#tokens textarea {
+    color: rgb(242, 101, 34);   
+    font-size: 25px; 
+}
+"""
+
 
 with gr.Blocks(css=custom_css) as demo:
     gs = gr.State({
@@ -426,19 +439,20 @@ with gr.Blocks(css=custom_css) as demo:
         use_speculative = gr.Checkbox(label="Use Speculative Decoding", value=args.draft_checkpoint_path is not None)
         temperature = gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label="Temperature", value=args.temperature)
         top_k = gr.Slider(minimum=1, maximum=200, step=1, label="Top K", value=1)
+        speculate_k = gr.Slider(minimum=1, maximum=20, step=1, label="Number of draft tokens", value=args.speculate_k)
     
     enter_event = msg.submit(user, [msg, chatbot, gs, img_input], [msg, chatbot, gs], queue=False).then(
-        bot, [chatbot, temperature, top_k, use_speculative, gs], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
+        bot, [chatbot, temperature, top_k, use_speculative, gs, speculate_k], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
     )
     
     clear_button.click(clear, [chatbot, gs], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=False)
     
     send_event = send_button.click(user, [msg, chatbot, gs, img_input], [msg, chatbot, gs], queue=False).then(
-        bot, [chatbot, temperature, top_k, use_speculative, gs], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
+        bot, [chatbot, temperature, top_k, use_speculative, gs, speculate_k], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
     )
     
     regenerate_event = regenerate_button.click(regenerate, [chatbot, gs], [chatbot, msg, speed_box, acceptance_box, tokens_box, gs], queue=False).then(
-        bot, [chatbot, temperature, top_k, use_speculative, gs], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
+        bot, [chatbot, temperature, top_k, use_speculative, gs, speculate_k], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
     )
     
     stop_button.click(fn=None, inputs=None, outputs=None, cancels=[send_event, regenerate_event, enter_event])

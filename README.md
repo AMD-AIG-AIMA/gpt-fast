@@ -4,8 +4,8 @@ This is a multimodal version of gpt-fast that adds support for vision-language m
 Featuring:
 1. Very low latency
 2. <1000 lines of python
-3. No dependencies other than PyTorch and sentencepiece
-4. int8/int4 quantization
+3. No dependencies other than PyTorch and Transformers
+4. int8/int4/fp8 quantizations
 5. Speculative decoding
 6. Tensor parallelism
 7. Supports AMD GPUs
@@ -45,45 +45,71 @@ First install [PyTorch](http://pytorch.org/) according to the instructions speci
 ### Download and Convert Model Weights
 
 To download and convert the models listed in the supported model above, use the following command to download the HF model checkpoints:
-```cli
+```bash
 bash scripts/prepare.sh <HF_model/repo_id> <download_dir> 
 ```
 where `<HF_model/repo_id>` is the model id from the [HuggingFace](https://huggingface.co/) website. This script will download the model weights from the HuggingFace and then convert them to the format supported by this GPTFast repo. You will need to have your HuggingFace token being added to the environment for the gated models. If you have not done that, you can use this command:
-```cli
+```bash
 huggingface-cli login
 ```
+### Optional: Quantize Model Weights
+To save memory and potentially improve performance, you can quantize models to int8, int4, or fp8:
 
+```bash
+python quantize.py --checkpoint_path <download_dir>/<HF_model/repo_id>/model.pth --mode int8
+```
+You can also directly apply quantization when preparing models by adding the quantization mode as a third parameter:
+```bash
+bash scripts/prepare.sh <HF_model/repo_id> <download_dir> int8
+```
 
 ### Run inference
 
+#### Benchmarking
+To run vanilla decoding benchmarks, use the `evaluate.py` script like below:
 
-
-To run vanilla decoding, use the `evaluate.py` script like below:
-
-```cli
+```bash
 python evaluate.py --bench_name MMMU --checkpoint_path   <download_dir>/<HF_model/repo_id>/model.pth`
 ```
 
 To run speculative decoding, add the draft models arguments as below:
 
-```cli
-python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth --draft_checkpoint_path  <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <#_of_draft_tokens>`
+```bash
+python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth --draft_checkpoint_path  <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <\#_of_draft_tokens>`
 ```
-- To compile the model forward passes using `torch.compile()`, you can use the `--compile` flag. Since compilation benefits from a fixed length kv-cache size, it is recommended to use a cache size large enough for both the target and the draft models as below:
+- To compile the model forward passes using `torch.compile()`, you can use the `--compile` flag. Since compilation benefits from a fixed length kv-cache size, it is recommended to use a cache size large enough for both the target and the draft models as below by setting the `--max_cache_size` and `--draft_max_cache_size` arguments:
 
-```cli
-python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth  --draft_checkpoint_path <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <#_of_draft_tokens> --compile --max_cache_size <target_model_cache_size> --draft_max_cache_size <target_model_cache_size>
+```bash
+python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth  --draft_checkpoint_path <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <\#_of_draft_tokens> --compile --max_cache_size <target_model_cache_size> --draft_max_cache_size <target_model_cache_size>
 ```
-- For the Llama 3.2 vision models, it is also preferred to set --cross_attention_seq_length as well to fix the kv-cache size of the cross attention layers.
+- For the Llama 3.2 vision models, it is also preferred to set `--cross_attention_seq_length` as well to fix the kv-cache size of the cross attention layers.
 
 - To leverage the draft model’s visual token compression for faster speculative decoding, you can use the `--mm_prune_method='random'` or  `--mm_prune_method='structured'` along with `--mm_prune_ratio=<prune_ratio>`.
 
 - For speculative decoding on very large models such as Llama 3.2 90B, you can use the drafter in a seperate gpu with `--draft_device` arguments.
 
+#### Interactive Text Generation with Web UI
+To run the gradio app to interact with the model, use the following command:
+
+```bash
+python app.py --checkpoint_path <download_dir>/<HF_model/repo_id>/model.pth
+```
+
+To use speculative decoding, add the following arguments:
+
+```bash
+python app.py --checkpoint_path <download_dir>/<HF_model/repo_id>/model.pth --speculate_k <#_of_draft_tokens>
+```
+
+The web UI automatically detects if your model is multimodal and displays an image upload interface if it is. You can:
+- Upload images
+- Adjust temperature and other sampling parameters
+- Toggle speculative decoding on/off
+- Stream generated text in real-time
 
 ## License
 
-`AMD gpt-fast` is released under the [BSD 3](https://github.com/pytorch-labs/gpt-fast/main/LICENSE) license.
+`AMD Multimodal gpt-fast` is released under the same license as the original GPTFast, [BSD 3](https://github.com/pytorch-labs/gpt-fast/main/LICENSE) license.
 
 ## Acknowledgements
-
+This project builds upon the original gpt-fast by PyTorch team and extends it with multimodal capabilities.
