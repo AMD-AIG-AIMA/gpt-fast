@@ -16,55 +16,6 @@ from utils import load_model
 from multimodal.vision_modules import VisionModule
 
 
-def truncate_list(lst, num):
-    if num not in lst:
-        return lst
-    first_index = lst.index(num)
-    return lst[:first_index + 1]
-
-def find_list_markers(text):
-    pattern = re.compile(r'(?m)(^\d+\.\s|\n)')
-    matches = pattern.finditer(text)
-    return [(match.start(), match.end()) for match in matches]
-
-def checkin(pointer,start,marker):
-    for b,e in marker:
-        if b<=pointer<e:
-            return True
-        if b<=start<e:
-            return True
-    return False
-
-def highlight_text(text, text_list,color="black"):
-
-    pointer = 0
-    result = ""
-    markers=find_list_markers(text)
-
-
-    for sub_text in text_list:
-
-        start = text.find(sub_text, pointer)
-        if start==-1:
-            continue
-        end = start + len(sub_text)
-
-
-        if checkin(pointer,start,markers):
-            result += text[pointer:start]
-        else:
-            result += f"<span style='color: {color};'>{text[pointer:start]}</span>"
-
-        result += sub_text
-
-        pointer = end
-
-    if pointer < len(text):
-        result += f"<span style='color: {color};'>{text[pointer:]}</span>"
-
-    return result
-
-
 def warmup(model, tokenizer, vision_modules=None, draft_model=None, draft_vision_modules=None):
     conv = get_conversation_template(args.checkpoint_path)
 
@@ -441,28 +392,27 @@ with gr.Blocks(css=custom_css) as demo:
     
     if args.draft_checkpoint_path:
         draft_model_name = args.draft_checkpoint_path.parent.name
-        gr.Markdown(f'''Using speculative decoding with draft model: {draft_model_name}''')
+        gr.Markdown(f'''### Using speculative decoding with draft model: {draft_model_name}''')
     
     with gr.Row():
-        speed_box = gr.Textbox(label="Speed", elem_id="speed", interactive=False, value="0.00 tokens/s")
+        speed_box = gr.Textbox(label="Genetation Speed", elem_id="speed", interactive=False, value="0.00 tokens/s")
         acceptance_box = gr.Textbox(label="Mean Acceptance Length", elem_id="speed", interactive=False, value="0.00")
         tokens_box = gr.Textbox(label="Tokens Generated", elem_id="tokens", interactive=False, value="0")
-    with gr.Row():
-        with gr.Column():
-            use_speculative = gr.Checkbox(label="Use Speculative Decoding", value=args.draft_checkpoint_path is not None)
-        temperature = gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label="Temperature", value=args.temperature)
-        top_k = gr.Slider(minimum=1, maximum=200, step=1, label="Top K", value=1)
-    
-    note = gr.Markdown('''Upload images by clicking the upload button below. Text and images will be processed together.''')
-    
     
     
     with gr.Row():
-        chatbot = gr.Chatbot(height=600, show_label=False, scale=2)
-        with gr.Column(scale=1):
-            img_input = gr.Image(type="pil", label="Upload Image", sources=["upload", "webcam"])
-            # Add visual indication of uploaded images
-            image_gallery = gr.Gallery(label="Current message images", show_label=False, visible=False, elem_id="image_gallery")
+        if multimodal:
+            chatbot = gr.Chatbot(height=600, show_label=False, scale=2)
+            with gr.Column(scale=1):
+                img_input = gr.Image(type="pil", label="Upload Image", sources=["upload", "webcam"])
+                # Add visual indication of uploaded images
+                image_gallery = gr.Gallery(label="Current message images", show_label=False, visible=False, elem_id="image_gallery")
+        else:
+            # For text-only models, use the full width for chatbot
+            chatbot = gr.Chatbot(height=600, show_label=False)
+            # Create hidden image components to maintain API compatibility
+            img_input = gr.Image(type="pil", visible=False)
+            image_gallery = gr.Gallery(visible=False)
 
     msg = gr.Textbox(label="Your input", placeholder="Type your message here...")
     
@@ -471,6 +421,11 @@ with gr.Blocks(css=custom_css) as demo:
         stop_button = gr.Button("Stop")
         regenerate_button = gr.Button("Regenerate")
         clear_button = gr.Button("Clear")
+
+    with gr.Row():
+        use_speculative = gr.Checkbox(label="Use Speculative Decoding", value=args.draft_checkpoint_path is not None)
+        temperature = gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label="Temperature", value=args.temperature)
+        top_k = gr.Slider(minimum=1, maximum=200, step=1, label="Top K", value=1)
     
     enter_event = msg.submit(user, [msg, chatbot, gs, img_input], [msg, chatbot, gs], queue=False).then(
         bot, [chatbot, temperature, top_k, use_speculative, gs], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
@@ -488,6 +443,8 @@ with gr.Blocks(css=custom_css) as demo:
     
     stop_button.click(fn=None, inputs=None, outputs=None, cancels=[send_event, regenerate_event, enter_event])
 
-    img_input.upload(update_gallery, [img_input, gs], [image_gallery, gs])
+    # Only add image gallery update when multimodal
+    if multimodal:
+        img_input.upload(update_gallery, [img_input, gs], [image_gallery, gs])
 
 demo.queue().launch(share=True)
