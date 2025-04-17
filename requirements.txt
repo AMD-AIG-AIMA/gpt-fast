@@ -1,6 +1,6 @@
 torch
+transformers
 sentencepiece
 tiktoken
 blobfile
 safetensors
-fastchat
