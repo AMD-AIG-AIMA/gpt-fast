@@ -42,5 +42,5 @@ def get_conversation_template(checkpoint_path):
         model_id = f"{checkpoint_path.parent.parent.name}/{checkpoint_path.parent.name}"
         processor = AutoProcessor.from_pretrained(model_id)
         return HFConversationTemplate(processor)
-    except:
-        raise NotImplementedError(f"The HF processor is not implemented for model {checkpoint_path}! Add the template manually!")
+    except Exception as e:
+        raise NotImplementedError(f"The HF processor is not implemented for model {checkpoint_path}! Check this error: \n\n{e}")

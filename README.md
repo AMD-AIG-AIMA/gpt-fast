@@ -46,7 +46,7 @@ This version adds support for several vision-language models:
 First, install [PyTorch](http://pytorch.org/) according to the instructions specific to your operating system. For AMD GPUs, we strongly recommend using ROCm Software dockers like [rocm/pytorch](https://hub.docker.com/r/rocm/pytorch).
 You can install the required packages using the command below to avoid reinstalling Torch from scratch.
 ```bash
-pip install --upgrade --upgrade-strategy only-if-needed -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 ```
 
 ### Download and Convert Model Weights
@@ -96,8 +96,13 @@ python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model
 - For speculative decoding on very large models such as Llama 3.2 90B, you can use the drafter in a seperate gpu with `--draft_device` arguments.
 
 #### Interactive Text Generation with Web UI
-To run the Gradio app to interact with the model, use the following command:
+To run the Gradio app to interact with the model, use the following command. If you have not installed the Gradio library, you can install it using the command below:
 
+```bash
+pip install gradio
+```
+
+Now you can run the app with the following command:
 ```bash
 python app.py --checkpoint_path <download_dir>/<HF_model/repo_id>/model.pth
 ```

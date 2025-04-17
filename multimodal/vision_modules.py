@@ -268,7 +268,7 @@ class Qwen2_5VisionModule(VisionModule):
         prune_method=None,
         prune_ratio=0.0,
         ):
-        if prune_method is 'random':
+        if prune_method=='random':
             raise NotImplementedError('Random pruning is not implemented for Qwen2.5 VL series of models.')
 
         prompt = process_prompt_for_qwen2_5vl(prompt)
