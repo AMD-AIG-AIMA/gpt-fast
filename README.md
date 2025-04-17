@@ -2,11 +2,11 @@
 
 ![Demo](./media/MMSpecDec.gif)
 
-This is a multimodal version of gpt-fast that adds support for vision-language models, allowing the framework to process both text and images.
+This is a multimodal version of GPT-Fast that adds support for vision-language models, allowing the framework to process both text and images.
 
 Featuring:
 1. Very low latency
-2. <1000 lines of python
+2. <1000 lines of Python
 3. No dependencies other than PyTorch and Transformers
 4. int8/int4/fp8 quantizations
 5. Speculative decoding
@@ -43,7 +43,11 @@ This version adds support for several vision-language models:
 
 ## Getting Started
 ### Installation
-First install [PyTorch](http://pytorch.org/) according to the instructions specific to your operating system. For AMD GPUs, we strongly recommend using ROCm Software dockers like [rocm/pytorch](https://hub.docker.com/r/rocm/pytorch).
+First, install [PyTorch](http://pytorch.org/) according to the instructions specific to your operating system. For AMD GPUs, we strongly recommend using ROCm Software dockers like [rocm/pytorch](https://hub.docker.com/r/rocm/pytorch).
+You can install the required packages using the command below to avoid reinstalling Torch from scratch.
+```bash
+pip install --upgrade --upgrade-strategy only-if-needed -r requirements.txt
+```
 
 ### Download and Convert Model Weights
 
@@ -51,7 +55,7 @@ To download and convert the models listed in the supported model above, use the 
 ```bash
 bash scripts/prepare.sh <HF_model/repo_id> <download_dir> 
 ```
-where `<HF_model/repo_id>` is the model id from the [HuggingFace](https://huggingface.co/) website. This script will download the model weights from the HuggingFace and then convert them to the format supported by this GPTFast repo. You will need to have your HuggingFace token being added to the environment for the gated models. If you have not done that, you can use this command:
+where `<HF_model/repo_id>` is the model id from the [HuggingFace](https://huggingface.co/) website. This script will download the model weights from HuggingFace and then convert them to the format supported by this GPTFast repo. You will need to have your HuggingFace token added to the environment for the gated models. If you have not done that, you can use this command:
 ```bash
 huggingface-cli login
 ```
@@ -75,7 +79,7 @@ To run vanilla decoding benchmarks, use the `evaluate.py` script like below:
 python evaluate.py --bench_name MMMU --checkpoint_path   <download_dir>/<HF_model/repo_id>/model.pth`
 ```
 
-To run speculative decoding, add the draft models arguments as below:
+To run speculative decoding, add the draft models' arguments as below:
 
 ```bash
 python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth --draft_checkpoint_path  <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <\#_of_draft_tokens>`
@@ -92,7 +96,7 @@ python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model
 - For speculative decoding on very large models such as Llama 3.2 90B, you can use the drafter in a seperate gpu with `--draft_device` arguments.
 
 #### Interactive Text Generation with Web UI
-To run the gradio app to interact with the model, use the following command:
+To run the Gradio app to interact with the model, use the following command:
 
 ```bash
 python app.py --checkpoint_path <download_dir>/<HF_model/repo_id>/model.pth
@@ -115,4 +119,4 @@ The web UI automatically detects if your model is multimodal and displays an ima
 `AMD Multimodal gpt-fast` is released under the same license as the original GPTFast, [BSD 3](https://github.com/pytorch-labs/gpt-fast/main/LICENSE) license.
 
 ## Acknowledgements
-This project builds upon the original gpt-fast by PyTorch team and extends it with multimodal capabilities.
+This project builds upon the original GPT-Fast by the PyTorch team and extends it with multimodal capabilities.
