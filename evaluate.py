@@ -124,6 +124,10 @@ def model_forward(model, x, input_pos):
 def draft_model_forward(model, x, input_pos):
     return model(x, input_pos)
 
+# Helper function to detect if an object is a generator
+def is_generator(obj):
+    return hasattr(obj, '__iter__') and hasattr(obj, '__next__') and callable(obj.__next__)
+
 def token_verify(target_logits, draft_probs, draft_tokens, speculate_k, device, sampling_kwargs):
     target_probs = logits_to_probs(target_logits[0], **sampling_kwargs)
     draft_probs = torch.stack(draft_probs).to(device)
@@ -230,7 +234,7 @@ def generate(
     max_new_tokens: int,
     batch_size: int,
     *,
-    interactive: bool,
+    interactive: bool, # TODO: should be merged with streaming
     draft_model: Transformer,
     speculate_k: Optional[int] = 8,
     callback = lambda x: x,
@@ -242,6 +246,7 @@ def generate(
     draft_max_cache_size: Optional[int] = None,
     cross_attention_seq_length: Optional[int] = None,
     start_pos: Optional[dict] = {"target": 0, "draft": 0},
+    streaming: bool = False,
     **sampling_kwargs
 ) -> torch.Tensor:
     """
@@ -277,11 +282,11 @@ def generate(
     device, dtype = prompt.device, prompt.dtype
     # Setup model caches
     with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_cache_size=lengths["max_cache_size"], prompt=prompt,
-                           cross_attention_seq_length=lengths["cross_attention_seq_length"])
+        model.setup_caches(max_batch_size=batch_size, max_cache_size=start_pos["target"]+lengths["max_cache_size"], prompt=prompt,
+                           cross_attention_seq_length=lengths["cross_attention_seq_length"], preserve_history=start_pos["target"]>0)
         if is_speculative and draft_model is not model:
-            draft_model.setup_caches(max_batch_size=batch_size, max_cache_size=lengths["draft_max_cache_size"], prompt=draft_prompt,
-                                     cross_attention_seq_length=lengths["cross_attention_seq_length"])
+            draft_model.setup_caches(max_batch_size=batch_size, max_cache_size=start_pos["draft"]+lengths["draft_max_cache_size"], prompt=draft_prompt,
+                                     cross_attention_seq_length=lengths["cross_attention_seq_length"], preserve_history=start_pos["draft"]>0)
 
     # Initialize sequence tensor
     seq = torch.empty(batch_size, lengths["text_seq_length"], dtype=dtype, device=device)
@@ -309,20 +314,22 @@ def generate(
             else:
                 prefill(draft_model, prompt.view(batch_size, -1).to(draft_device),
                         draft_input_pos.to(draft_device), **sampling_kwargs)
+    if streaming:
+        yield next_token
     prefill_time, prefill_tokens_per_second = profiler.get_last_call_stats()
     seq[:, lengths["input_text_length"]] = next_token.squeeze()
-    input_pos = torch.tensor([lengths["input_embed_length"]], device=device, dtype=torch.int)
+    input_pos = torch.tensor([input_pos[-1].item()+1], device=device, dtype=torch.int)
     
     accept_counts = [0] * (speculate_k + 1)
     acceptance_lengths = []
 
     if is_speculative:
         input_pos = input_pos.item()  # for speculative decoding easier to keep on host
-        draft_input_pos = lengths["draft_input_embed_length"]
-        max_pos = lengths["embed_seq_length"] - 1 - (speculate_k + 1)
+        draft_input_pos = start_pos['draft'] + lengths["draft_input_embed_length"]
+        max_pos = lengths["embed_seq_length"] - 1 - (speculate_k + 1) + start_pos["target"]
         while input_pos < max_pos:
             cur_token = next_token.view(())
-
+            adjusted_pos = input_pos - start_pos['target']
             next_tokens = speculative_decode(
                 model, draft_model, cur_token, input_pos, speculate_k, 
                 draft_input_pos, **sampling_kwargs
@@ -330,24 +337,27 @@ def generate(
 
             accept_counts[len(next_tokens) - 1] += 1
             acceptance_lengths.append(len(next_tokens) - 1)
-            num_added = min(lengths["embed_seq_length"] - input_pos - 1, len(next_tokens))
+            num_added = min(lengths["embed_seq_length"] - adjusted_pos - 1, len(next_tokens))
             if not multimodal:
-                seq[:,input_pos + 1 : input_pos + num_added + 1] = next_tokens[: num_added]
+                seq[:,adjusted_pos + 1 : adjusted_pos + num_added + 1] = next_tokens[: num_added]
             else:
-                text_input_pos = input_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
+                text_input_pos = adjusted_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
                 seq[:, text_input_pos : text_input_pos + num_added] = next_tokens[: num_added]
             input_pos = input_pos + num_added
             draft_input_pos = draft_input_pos + num_added
             next_token = next_tokens[-1]
-            # check if stop token is found
-            if callback(next_tokens[: num_added,]):
+            should_stop = callback(next_tokens[: num_added,])
+            if should_stop:
                 break
-        text_input_pos = input_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
+            if streaming:
+                yield next_tokens[: num_added]
+        # TODO: Check this for cases when stop_id is among before the last token accepted
+        text_input_pos = adjusted_pos - (lengths["input_embed_length"] - lengths["input_text_length"]) + 1
         seq = seq[:, :text_input_pos]
     else:
         new_tokens, new_probs = [], []
         cur_token = next_token.view(batch_size, -1)
-        num_new_tokens = max_new_tokens - 1
+        num_new_tokens = max_new_tokens - 1 + start_pos["target"]
         for i in range(num_new_tokens):
             with TimeProfiler("Vanilla Decoding", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
                 profiler.set_tokens_processed(1)
@@ -358,9 +368,11 @@ def generate(
                     )
                     input_pos += 1
                     new_tokens.append(next_token.clone())
-                    # Check single token
-                    if callback(next_token):
-                        break  # Stop if token matches stopping criteria
+                    should_stop = callback(next_token)
+                    if should_stop:
+                        break
+                    if streaming:
+                        yield next_token
                     new_probs.append(next_prob.clone())
                     cur_token = next_token.clone()
         end = len(new_tokens) + lengths["input_text_length"] +1
@@ -370,10 +382,12 @@ def generate(
     generate_stats = {
         'accept_counts': accept_counts,
         'prefill_time': prefill_time,
-        'acceptance_lengths': acceptance_lengths
+        'acceptance_lengths': acceptance_lengths,
+        'target_input_pos': input_pos if is_speculative else input_pos.item(),
+        'draft_input_pos': draft_input_pos if is_speculative else 0
     }
     
-    # print('after: ', seq)
+    # Only return sequence and stats if not streaming (if callback is a generator, we've been yielding)
     return seq, generate_stats
 
 
@@ -389,7 +403,7 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
                      draft_model, speculate_k, device, vision_modules=None,
                      draft_vision_modules=None, max_cache_size=None, draft_max_cache_size=None, 
                      cross_attention_seq_length=None, mm_prune_method=None, mm_prune_ratio=0.0, 
-                     turn=0, start_pos={"target": 0, "draft": 0}, stream_callback=None):
+                     turn=0, start_pos={"target": 0, "draft": 0}, streaming=False):
     is_speculative = draft_model is not None
     multimodal = vision_modules is not None
     draft_multimodal = draft_vision_modules is not None
@@ -397,50 +411,47 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
 
     stop_token_ids_set = set(conv.stop_token_ids)
     stop_token_ids_tensor = torch.tensor(conv.stop_token_ids, device=device)
+    
     # Create an optimized callback function that handles both single tokens and batches
     def token_callback(tokens):
         # Handle the case where tokens is a single token tensor
         if tokens.numel() == 1:
-            if stream_callback:
-                stream_callback(tokens, acceptance_length=0)
             if tokens.item() in stop_token_ids_set:
                 return True
-            return False
-        
-        # Handle batch of tokens with vectorized operation
-        if stream_callback:
-            stream_callback(tokens, acceptance_length=len(tokens))
-        if conv.stop_token_ids:
-            # Check if any token in the batch is a stop token
-            is_stop = torch.isin(tokens, stop_token_ids_tensor.to(tokens.device))
-            return is_stop.any().item()
+        else:
+            # Handle batch of tokens with vectorized operation
+            if conv.stop_token_ids:
+                # Check if any token in the batch is a stop token
+                is_stop = torch.isin(tokens, stop_token_ids_tensor.to(tokens.device))
+                should_stop = is_stop.any().item()
+                return should_stop
         return False
 
     # Add the user's message to the conversation
     conv.append_message(conv.roles[0], question['turns'][turn])
     
     # Get the prompt for processing - get only the latest turn
-    if len(conv.messages) < 2:
+    if len(conv.messages) == 1:
         prompt = conv.get_prompt_for_generation()
     else:
-        # For custom HF template, we'll need to handle this differently
-        # Create a temporary conversation that has only the system message and current user message
+        # For multiturn conversation, we only need the last conversation
+        full_prompt = conv.get_prompt_for_generation()
         temp_conv = copy.deepcopy(conv)
-        temp_conv.messages = [conv.messages[-1]]
-        temp_conv.system_message = None
-        prompt = temp_conv.get_prompt()
-        if conv.bos_token and prompt.startswith(conv.bos_token):
-            prompt = prompt[len(conv.bos_token):]
+        temp_conv.messages = conv.messages[:-1]
+        past_prompt = temp_conv.get_prompt()
+        prompt = full_prompt[len(past_prompt):]
     
-    if not multimodal:
+    images = question.get('images',[])
+    if not multimodal or len(images)==0:
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
-        embedded, draft_encoded, draft_embedded, draft_prompt = None, None, None, None
-        start_pos["target"] += encoded.shape[0]
-        start_pos["draft"] += encoded.shape[0]
+        embedded, draft_encoded, draft_embedded = None, None, None
+        if draft_multimodal and draft_model.mrope:
+            draft_prompt = encoded
+        else:
+            draft_prompt = None
     else:
         with TimeProfiler("Embedding"):
             with torch.inference_mode():
-                images = question.get('images',[])
                 encoded, embedded = vision_modules(
                     prompt=prompt, tokenizer=tokenizer, images=images,
                     embed_tokens=model.tok_embeddings, 
@@ -452,7 +463,6 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
                 if len(conv.messages)<2:
                     model.cross_attention_mask = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)
                     model.cross_attention_mask_out = getattr(vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
-                start_pos["target"] += encoded.shape[1] if (model.cross_attention_mask is not None or embedded is None) else embedded.shape[1]
                 if is_speculative and draft_multimodal:
                     # Set temporary default device for vision modules loading
                     if model._device != draft_model._device:
@@ -472,20 +482,26 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
                     if len(conv.messages)<2:
                         draft_model.cross_attention_mask = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask', None)  
                         draft_model.cross_attention_mask_out = getattr(draft_vision_modules, "cross_attention_masks", {}).get('cross_attention_mask_out', None)
-                    start_pos["draft"] += encoded.shape[1] if (draft_model.cross_attention_mask is not None or draft_embedded is None) else draft_embedded.shape[1]
                 elif is_speculative and not draft_multimodal:
                     # Target model is multimodal, and draft model is text only -> encoding would be different if <image> token is present
                     draft_encoded = encode_tokens(tokenizer, prompt, bos=True, device=draft_model._device)
                     draft_embedded = None
                     draft_prompt = None
-                    start_pos["draft"] += draft_encoded.shape[0]
                 else:
                     draft_encoded, draft_embedded, draft_prompt = None, None, None
                 encoded = encoded.squeeze(0)
     
     start_time = time.time()
+    
+
     with TimeProfiler("generate"):
-        output, metrics = generate(
+        # Store generated tokens for post-streaming analysis
+        all_streamed_tokens = []
+        output = None
+        metrics = None
+        
+        # Run generation with modified handling to capture both streamed tokens and final output
+        generator = generate(
             model,
             encoded,
             max_new_tokens,
@@ -500,10 +516,25 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
             draft_prompt=draft_prompt,
             draft_encoded=draft_encoded,
             draft_embedded=draft_embedded,
-            max_cache_size = max_cache_size,
-            draft_max_cache_size = draft_max_cache_size,
+            max_cache_size=max_cache_size,
+            draft_max_cache_size=draft_max_cache_size,
             cross_attention_seq_length=cross_attention_seq_length,
+            start_pos=start_pos,
+            streaming=streaming,
         )
+        try:
+            if streaming:
+                # Streaming behavior
+                while True:
+                    tokens = next(generator)
+                    all_streamed_tokens.append(tokens)
+                    yield tokens
+            else:
+                while True:
+                    # generate is a generator, so we need to call next to get the final output
+                    _ = next(generator)
+        except StopIteration as e:
+            output, metrics = e.value
     end_time = time.time()
     output_ids = output[0][len(encoded):]
     if conv.stop_token_ids:
@@ -519,9 +550,6 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
             generated_text = generated_text[:stop_str_index]
     
     generated_text = generated_text.strip()
-    start_pos["target"] += len(output_ids)
-    if is_speculative:
-        start_pos["draft"] += len(output_ids)
 
     result['walltime'] = end_time - start_time - metrics['prefill_time']
     result['tokens_generated'] = len(output[0]) - len(encoded)
@@ -530,8 +558,10 @@ def process_one_question(question, model, tokenizer, conv, max_new_tokens, tempe
     result['generated_text'] = generated_text
     result['prefill_time'] = metrics['prefill_time']
     result['acceptance_lengths'] = metrics['acceptance_lengths']
+    start_pos['target'] = metrics['target_input_pos']
+    if is_speculative:
+        start_pos['draft'] = metrics['draft_input_pos']
     return start_pos, result
-
 
 def process_questions(questions, model, tokenizer, conv, system_message, max_new_tokens, temperature, top_k,
                      draft_model, speculate_k, device, vision_modules=None,
@@ -579,16 +609,21 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
         accept_counts = []
         start_pos = {"target": 0, "draft": 0}
         for j in range(len(question["turns"])):
-            start_pos, result = process_one_question(question, model, tokenizer, conv, max_new_tokens, temperature, top_k,
-                                draft_model, speculate_k, device, vision_modules,
-                                draft_vision_modules, max_cache_size, draft_max_cache_size, cross_attention_seq_length,
-                                mm_prune_method, mm_prune_ratio, j, start_pos)
-            
+            generator = process_one_question(question, model, tokenizer, conv, max_new_tokens, temperature, top_k,
+                        draft_model, speculate_k, device, vision_modules,
+                        draft_vision_modules, max_cache_size, draft_max_cache_size, cross_attention_seq_length,
+                        mm_prune_method, mm_prune_ratio, j, start_pos)
+            try:
+                while True:
+                    _ = next(generator)
+            except StopIteration as e:
+                start_pos, result = e.value
             turns.append(result['generated_text'])
             new_tokens.append(result['tokens_generated'])
             wall_time.append(result['walltime'])
             prefill_time.append(result['prefill_time'])
             accept_counts.append(result['accept_counts'])
+            speeds.append(result['speed'])
 
         # Clear cache after processing this question
         model.clear_cache()
@@ -640,6 +675,7 @@ def main(
     cross_attention_seq_length: int = None,
     mm_prune_method: str = None,
     mm_prune_ratio: float = 0.0,
+    streaming: bool = False,
 ):
     global print
     # Initialize distributed setup
@@ -813,10 +849,12 @@ if __name__ == '__main__':
                        help='Method for pruning multimodal tokens in draft model')
     parser.add_argument('--mm_prune_ratio', type=float, default=0.0,
                        help='Ratio of multimodal tokens to prune (0.0 to 1.0)')
+    parser.add_argument('--streaming', action='store_true', help='Enable streaming mode for token-by-token output')
     
     args = parser.parse_args()
     if args.random_seed:
         torch.manual_seed(args.random_seed)
     main(args.bench_name, args.checkpoint_path, args.max_new_tokens, args.temperature, args.top_k, args.device, args.dtype,
          args.draft_checkpoint_path, args.draft_device, args.speculate_k, args.compile, args.compile_prefill, args.num_questions,
-         args.warmup, args.max_cache_size, args.draft_max_cache_size, args.cross_attention_seq_length, args.mm_prune_method, args.mm_prune_ratio)
+         args.warmup, args.max_cache_size, args.draft_max_cache_size, args.cross_attention_seq_length, args.mm_prune_method, 
+         args.mm_prune_ratio, args.streaming)

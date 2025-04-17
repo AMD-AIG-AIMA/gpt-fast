@@ -184,7 +184,7 @@ class Transformer(nn.Module):
             self.image_grid_thw=None
         
 
-    def setup_caches(self, max_batch_size, max_cache_size, prompt=None, cross_attention_seq_length=None):
+    def setup_caches(self, max_batch_size, max_cache_size, prompt=None, cross_attention_seq_length=None, preserve_history=False):
         if self.mrope:
             position_ids, _ = get_rope_index(input_ids=prompt, image_grid_thw=getattr(self,'image_grid_thw', None), mm_config=self.config.mm_config)
         else:
@@ -197,6 +197,7 @@ class Transformer(nn.Module):
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
             
+        # If current cache is sufficient and we're just updating freqs_cis for mrope
         if self.max_cache_size >= max_cache_size and self.max_batch_size >= max_batch_size and (self.cross_attention_seq_length >= cross_attention_seq_length if cross_attention_seq_length is not None else True):
             if self.mrope:
                 self.freqs_cis[:max_cache_size] = precompute_freqs_cis_for_qwen2_5_vl(max_cache_size, self.config.dim // self.config.n_head, 
@@ -205,17 +206,53 @@ class Transformer(nn.Module):
         
         head_dim = self.config.dim // self.config.n_head
         max_cache_size = find_multiple(max_cache_size, 8)
+        
+        # Remember old cache sizes for history preservation
+        old_max_cache_size = self.max_cache_size
+        old_cross_attention_seq_length = self.cross_attention_seq_length
+        
+        # Update metadata for new caches
         self.max_cache_size = max_cache_size
         self.max_batch_size = max_batch_size
         if cross_attention_seq_length:
             self.cross_attention_seq_length = cross_attention_seq_length
-       
+        
+        # Create or update KV caches
         for b in self.layers:
-            if hasattr(b,'attention'):
-                b.attention.kv_cache = KVCache(max_batch_size, max_cache_size, self.config.n_local_heads, head_dim, self._device, dtype)
-            if hasattr(b,'cross_attention'):
+            if hasattr(b, 'attention'):
+                # Save reference to old cache if it exists
+                old_cache = b.attention.kv_cache if hasattr(b.attention, 'kv_cache') else None
+                
+                # Create new cache
+                b.attention.kv_cache = KVCache(max_batch_size, max_cache_size, 
+                                              self.config.n_local_heads, head_dim, self._device, dtype)
+                
+                # Copy old values using efficient tensor operations
+                if preserve_history and old_cache is not None and old_max_cache_size > 0:
+                    # Use narrow + copy_ for efficient copying without allocating new tensors
+                    copy_size = min(old_max_cache_size, max_cache_size)
+                    b.attention.kv_cache.k_cache[:, :, :copy_size].copy_(
+                        old_cache.k_cache[:, :, :copy_size])
+                    b.attention.kv_cache.v_cache[:, :, :copy_size].copy_(
+                        old_cache.v_cache[:, :, :copy_size])
+                
+            if hasattr(b, 'cross_attention'):
+                # Save reference to old cross-attention cache if it exists
+                old_cross_cache = b.cross_attention.kv_cache if hasattr(b.cross_attention, 'kv_cache') else None
+                
+                # Create new cross-attention cache
                 b.cross_attention.kv_cache = KVCache(max_batch_size, cross_attention_seq_length, 
-                                                     self.config.n_local_heads, head_dim, self._device, dtype)
+                                                   self.config.n_local_heads, head_dim, self._device, dtype)
+                
+                # Copy old values using efficient tensor operations
+                if preserve_history and old_cross_cache is not None and old_cross_attention_seq_length > 0:
+                    copy_size = min(old_cross_attention_seq_length, cross_attention_seq_length)
+                    b.cross_attention.kv_cache.k_cache[:, :, :copy_size].copy_(
+                        old_cross_cache.k_cache[:, :, :copy_size])
+                    b.cross_attention.kv_cache.v_cache[:, :, :copy_size].copy_(
+                        old_cross_cache.v_cache[:, :, :copy_size])
+        
+        # Update the RoPE embeddings and causal mask
         if self.mrope:
             if position_ids is None:
                 raise ValueError('Multimodal Rope requires the position id')
