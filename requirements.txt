@@ -1,5 +1,5 @@
 torch
-transformers
+transformers>=4.49
 sentencepiece
 tiktoken
 blobfile
