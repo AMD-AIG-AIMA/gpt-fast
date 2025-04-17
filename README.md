@@ -1,4 +1,7 @@
 # Multimodal gpt-fast
+
+![Demo](./media/MMSpecDec.gif)
+
 This is a multimodal version of gpt-fast that adds support for vision-language models, allowing the framework to process both text and images.
 
 Featuring:
