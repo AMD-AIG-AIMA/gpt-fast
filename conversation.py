@@ -39,8 +39,21 @@ class HFConversationTemplate:
 
 def get_conversation_template(checkpoint_path):
     try:
-        model_id = f"{checkpoint_path.parent.parent.name}/{checkpoint_path.parent.name}"
-        processor = AutoProcessor.from_pretrained(model_id)
+        model_path = f"{checkpoint_path.parent}"
+        if not (checkpoint_path.parent/"chat_template.json").exists():
+            from huggingface_hub import hf_hub_download
+
+            file_path = hf_hub_download(
+                repo_id="Qwen/Qwen2.5-VL-3B-Instruct",
+                filename="chat_template.json",
+                local_dir=model_path,
+                local_dir_use_symlinks=False  # set to False to copy instead of symlink
+            )
+
+            
+            print(f"Chat template for {checkpoint_path.parent.parent.name}/{checkpoint_path.parent.name} not found, downloaded from Qwen/Qwen2.5-VL-3B-Instruct and saved at:", file_path)
+        processor = AutoProcessor.from_pretrained(model_path)
+
         return HFConversationTemplate(processor)
     except Exception as e:
         raise NotImplementedError(f"The HF processor is not implemented for model {checkpoint_path}! Check this error: \n\n{e}")

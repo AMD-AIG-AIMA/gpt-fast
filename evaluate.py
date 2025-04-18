@@ -623,7 +623,8 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
             wall_time.append(result['walltime'])
             prefill_time.append(result['prefill_time'])
             accept_counts.append(result['accept_counts'])
-            speeds.append(result['speed'])
+            if collect_metrics:
+                speeds.append(result['speed'])
 
         # Clear cache after processing this question
         model.clear_cache()
