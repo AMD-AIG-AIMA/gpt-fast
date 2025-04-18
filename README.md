@@ -20,34 +20,34 @@ For an in-depth walkthrough of what's in this codebase, see this [blog post](lin
 ## Supported Models
 
 ### Text Models
-- LLaMA family models (Llama-2, Llama-3, Llama-3.1, Llama-3.2, AMD-Llama) (Example 🤗: [meta-llama/Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/tree/main), [amd/AMD-Llama-135m](https://huggingface.co/amd/AMD-Llama-135m), ...)
+- LLaMA family models (Llama-2, Llama-3, Llama-3.1, Llama-3.2, AMD-Llama) (Example <a href="https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>, <a href="https://huggingface.co/amd/AMD-Llama-135m" target="_blank" rel="noopener noreferrer">🤗</a>, ...)
 
-- Qwen family models (Qwen-2, Qwen-2.5) (Example 🤗: [Qwen/Qwen2.5-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct), ...)
+- Qwen family models (Qwen-2, Qwen-2.5) (Example: <a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>, ...)
 
 
 ### Multimodal Models
 This version adds support for several vision-language models:
 
 #### Qwen Vision-Language Models
-- Qwen-2.5-VL-3B-Instruct (🤗 [Qwen/Qwen2.5-VL-3B-Instruct](Qwen/Qwen2.5-VL-3B-Instruct))
+- Qwen/Qwen-2.5-VL-3B-Instruct <a href="https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
 
-- Qwen-2.5-VL-7B-Instruct (🤗 [Qwen/Qwen2.5-VL-7B-Instruct](Qwen/Qwen2.5-VL-7B-Instruct))
+- Qwen/Qwen-2.5-VL-7B-Instruct <a href="https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
 
-- Qwen-2.5-VL-72B-Instruct (🤗 [Qwen/Qwen2.5-VL-72B-Instruct](Qwen/Qwen2.5-VL-3B-Instruct))
+- Qwen/Qwen-2.5-VL-72B-Instruct <a href="https://huggingface.co/Qwen/Qwen2.5-VL-72B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
 
 
 #### Llava One-Vision Models
-- Llava-One-Vision-Qwen2-0.5B-Si (🤗 [lmms-lab/llava-onevision-qwen2-0.5b-si](https://huggingface.co/lmms-lab/llava-onevision-qwen2-0.5b-si))
+- lmms-lab/Llava-One-Vision-Qwen2-0.5B-Si <a href="https://huggingface.co/lmms-lab/llava-onevision-qwen2-0.5b-si" target="_blank" rel="noopener noreferrer">🤗</a>
 
-- Llava-One-Vision-Qwen2-7B-Si (🤗 [lmms-lab/llava-onevision-qwen2-7b-si](https://huggingface.co/lmms-lab/llava-onevision-qwen2-7b-si))
+- lmms-lab/Llava-One-Vision-Qwen2-7B-Si <a href="https://huggingface.co/lmms-lab/llava-onevision-qwen2-7b-si" target="_blank" rel="noopener noreferrer">🤗</a>
 
-- Llava-One-Vision-Qwen2-72B-Si (🤗 [lmms-lab/llava-onevision-qwen2-72b-si](https://huggingface.co/lmms-lab/llava-onevision-qwen2-72b-si))
+- lmms-lab/Llava-One-Vision-Qwen2-72B-Si <a href="https://huggingface.co/lmms-lab/llava-onevision-qwen2-72b-si" target="_blank" rel="noopener noreferrer">🤗</a>
 
 
 #### Llama-3.2-Vision-Instruct Models
-- Llama-3.2-11B-Vision-Instruct (🤗 [meta-llama/Llama-3.2-11B-Vision-Instruct](https://huggingface.co/meta-llama/Llama-3.2-11B-Vision-Instruct))
+- meta-llama/Llama-3.2-11B-Vision-Instruct <a href="https://huggingface.co/meta-llama/Llama-3.2-11B-Vision-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
 
-- Llama-3.2-90B-Vision-Instruct (🤗 [meta-llama/Llama-3.2-90B-Vision-Instruct](https://huggingface.co/meta-llama/Llama-3.2-90B-Vision-Instruct))
+- meta-llama/Llama-3.2-90B-Vision-Instruct <a href="https://huggingface.co/meta-llama/Llama-3.2-90B-Vision-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
 
 
 
@@ -92,12 +92,12 @@ python evaluate.py --bench_name MMMU --checkpoint_path   <download_dir>/<HF_mode
 To run speculative decoding, add the draft models' arguments as below:
 
 ```bash
-python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth --draft_checkpoint_path  <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <\#_of_draft_tokens>`
+python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth --draft_checkpoint_path  <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <num_of_draft_tokens>`
 ```
 - To compile the model forward passes using `torch.compile()`, you can use the `--compile` flag. Since compilation benefits from a fixed length kv-cache size, it is recommended to use a cache size large enough for both the target and the draft models as below by setting the `--max_cache_size` and `--draft_max_cache_size` arguments:
 
 ```bash
-python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth  --draft_checkpoint_path <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <\#_of_draft_tokens> --compile --max_cache_size <target_model_cache_size> --draft_max_cache_size <target_model_cache_size>
+python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth  --draft_checkpoint_path <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <num_of_draft_tokens> --compile --max_cache_size <target_model_cache_size> --draft_max_cache_size <target_model_cache_size>
 ```
 - For the Llama 3.2 vision models, it is also preferred to set `--cross_attention_seq_length` as well to fix the kv-cache size of the cross attention layers.
 
@@ -105,7 +105,11 @@ python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model
 
 - For speculative decoding on very large models such as Llama 3.2 90B, you can use the drafter in a seperate gpu with `--draft_device` arguments.
 
-- To use Tensor Parallel distributed strategy for large multimodal models, you can prepend `ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=<#_gpus>` to the above commands.
+- To use the Tensor Parallel distributed strategy for large multimodal models, you can use the following command. Note that models such as Qwen 0.5B/7B and Llava 0.5B/7B may not adopt this approach on 8 GPUs, as their attention sizes are not evenly divisible by 8.
+
+```bash
+ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=<num_gpus> evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth --draft_checkpoint_path  <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <num_of_draft_tokens>`
+```
 
 #### Interactive Text Generation with Web UI
 To run the Gradio app to interact with the model, use the following command. If you have not installed the Gradio library, you can install it using the command below:
