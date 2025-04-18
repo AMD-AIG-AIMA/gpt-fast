@@ -20,25 +20,34 @@ For an in-depth walkthrough of what's in this codebase, see this [blog post](lin
 ## Supported Models
 
 ### Text Models
-- LLaMA family models (Llama-2, Llama-3, Llama-3.1, Llama-3.2, AMD-Llama) (Example 🤗: [meta-llama/Llama-3.1-8B-Instruct](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/tree/main), [amd/AMD-Llama-135m](https://huggingface.co/amd/AMD-Llama-135m), ...)
-- Qwen family models (Qwen-2, Qwen-2.5) (Example 🤗: [Qwen/Qwen2.5-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct), ...)
+- LLaMA family models (Llama-2, Llama-3, Llama-3.1, Llama-3.2, AMD-Llama) (Example <a href="https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>, <a href="https://huggingface.co/amd/AMD-Llama-135m" target="_blank" rel="noopener noreferrer">🤗</a>, ...)
+
+- Qwen family models (Qwen-2, Qwen-2.5) (Example: <a href="https://huggingface.co/Qwen/Qwen2.5-3B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>, ...)
+
 
 ### Multimodal Models
 This version adds support for several vision-language models:
 
 #### Qwen Vision-Language Models
-- Qwen-2.5-VL-3B-Instruct (🤗 [Qwen/Qwen2.5-VL-3B-Instruct](Qwen/Qwen2.5-VL-3B-Instruct))
-- Qwen-2.5-VL-7B-Instruct (🤗 [Qwen/Qwen2.5-VL-7B-Instruct](Qwen/Qwen2.5-VL-7B-Instruct))
-- Qwen-2.5-VL-72B-Instruct (🤗 [Qwen/Qwen2.5-VL-72B-Instruct](Qwen/Qwen2.5-VL-3B-Instruct))
+- Qwen/Qwen-2.5-VL-3B-Instruct <a href="https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
+
+- Qwen/Qwen-2.5-VL-7B-Instruct <a href="https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
+
+- Qwen/Qwen-2.5-VL-72B-Instruct <a href="https://huggingface.co/Qwen/Qwen2.5-VL-72B-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
+
 
 #### Llava One-Vision Models
-- Llava-One-Vision-Qwen2-0.5B-Si (🤗 [lmms-lab/llava-onevision-qwen2-0.5b-si](https://huggingface.co/lmms-lab/llava-onevision-qwen2-0.5b-si))
-- Llava-One-Vision-Qwen2-7B-Si (🤗 [lmms-lab/llava-onevision-qwen2-7b-si](https://huggingface.co/lmms-lab/llava-onevision-qwen2-7b-si))
-- Llava-One-Vision-Qwen2-72B-Si (🤗 [lmms-lab/llava-onevision-qwen2-72b-si](https://huggingface.co/lmms-lab/llava-onevision-qwen2-72b-si))
+- lmms-lab/Llava-One-Vision-Qwen2-0.5B-Si <a href="https://huggingface.co/lmms-lab/llava-onevision-qwen2-0.5b-si" target="_blank" rel="noopener noreferrer">🤗</a>
+
+- lmms-lab/Llava-One-Vision-Qwen2-7B-Si <a href="https://huggingface.co/lmms-lab/llava-onevision-qwen2-7b-si" target="_blank" rel="noopener noreferrer">🤗</a>
+
+- lmms-lab/Llava-One-Vision-Qwen2-72B-Si <a href="https://huggingface.co/lmms-lab/llava-onevision-qwen2-72b-si" target="_blank" rel="noopener noreferrer">🤗</a>
+
 
 #### Llama-3.2-Vision-Instruct Models
-- Llama-3.2-11B-Vision-Instruct (🤗 [meta-llama/Llama-3.2-11B-Vision-Instruct](https://huggingface.co/meta-llama/Llama-3.2-11B-Vision-Instruct))
-- Llama-3.2-90B-Vision-Instruct (🤗 [meta-llama/Llama-3.2-90B-Vision-Instruct](https://huggingface.co/meta-llama/Llama-3.2-90B-Vision-Instruct))
+- meta-llama/Llama-3.2-11B-Vision-Instruct <a href="https://huggingface.co/meta-llama/Llama-3.2-11B-Vision-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
+
+- meta-llama/Llama-3.2-90B-Vision-Instruct <a href="https://huggingface.co/meta-llama/Llama-3.2-90B-Vision-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
 
 
 ## Getting Started
