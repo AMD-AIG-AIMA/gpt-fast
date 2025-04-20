@@ -623,7 +623,8 @@ def process_questions(questions, model, tokenizer, conv, system_message, max_new
             wall_time.append(result['walltime'])
             prefill_time.append(result['prefill_time'])
             accept_counts.append(result['accept_counts'])
-            speeds.append(result['speed'])
+            if collect_metrics:
+                speeds.append(result['speed'])
 
         # Clear cache after processing this question
         model.clear_cache()
@@ -817,7 +818,8 @@ def main(
         if is_speculative:
             counts_aggregated = [0] * (speculate_k + 1)
             for result in results:
-                counts_aggregated = [count + result['accept_counts'][idx] for idx, count in enumerate(counts_aggregated)]
+                for turn in result['accept_counts']:
+                    counts_aggregated = [count + acceptance_length for count, acceptance_length in zip(counts_aggregated, turn)]            
             total_counts = sum(counts_aggregated)
             acceptance_probs = [count / total_counts for count in counts_aggregated]
             print(f"Acceptance probs: {acceptance_probs}")

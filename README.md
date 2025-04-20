@@ -50,6 +50,7 @@ This version adds support for several vision-language models:
 - meta-llama/Llama-3.2-90B-Vision-Instruct <a href="https://huggingface.co/meta-llama/Llama-3.2-90B-Vision-Instruct" target="_blank" rel="noopener noreferrer">🤗</a>
 
 
+
 ## Getting Started
 ### Installation
 First, install [PyTorch](http://pytorch.org/) according to the instructions specific to your operating system. For AMD GPUs, we strongly recommend using ROCm Software dockers like [rocm/pytorch](https://hub.docker.com/r/rocm/pytorch).
@@ -91,18 +92,24 @@ python evaluate.py --bench_name MMMU --checkpoint_path   <download_dir>/<HF_mode
 To run speculative decoding, add the draft models' arguments as below:
 
 ```bash
-python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth --draft_checkpoint_path  <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <\#_of_draft_tokens>`
+python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth --draft_checkpoint_path  <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <num_of_draft_tokens>`
 ```
 - To compile the model forward passes using `torch.compile()`, you can use the `--compile` flag. Since compilation benefits from a fixed length kv-cache size, it is recommended to use a cache size large enough for both the target and the draft models as below by setting the `--max_cache_size` and `--draft_max_cache_size` arguments:
 
 ```bash
-python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth  --draft_checkpoint_path <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <\#_of_draft_tokens> --compile --max_cache_size <target_model_cache_size> --draft_max_cache_size <target_model_cache_size>
+python evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth  --draft_checkpoint_path <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <num_of_draft_tokens> --compile --max_cache_size <target_model_cache_size> --draft_max_cache_size <target_model_cache_size>
 ```
 - For the Llama 3.2 vision models, it is also preferred to set `--cross_attention_seq_length` as well to fix the kv-cache size of the cross attention layers.
 
 - To leverage the draft model’s visual token compression for faster speculative decoding, you can use the `--mm_prune_method='random'` or  `--mm_prune_method='structured'` along with `--mm_prune_ratio=<prune_ratio>`.
 
 - For speculative decoding on very large models such as Llama 3.2 90B, you can use the drafter in a seperate gpu with `--draft_device` arguments.
+
+- To use the Tensor Parallel distributed strategy for large multimodal models, you can use the following command. Note that models such as Qwen 0.5B/7B and Llava 0.5B/7B may not adopt this approach on 8 GPUs, as their attention sizes are not evenly divisible by 8.
+
+```bash
+ENABLE_INTRA_NODE_COMM=1 torchrun --standalone --nproc_per_node=<num_gpus> evaluate.py --bench_name MMMU --checkpoint_path  <download_dir>/<HF_model_target/repo_id>/model.pth --draft_checkpoint_path  <download_dir>/<HF_model_draft/repo_id>/model.pth --speculate_k <num_of_draft_tokens>`
+```
 
 #### Interactive Text Generation with Web UI
 To run the Gradio app to interact with the model, use the following command. If you have not installed the Gradio library, you can install it using the command below:
