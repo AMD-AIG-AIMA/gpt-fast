@@ -40,7 +40,7 @@ class HFConversationTemplate:
 def get_conversation_template(checkpoint_path):
     try:
         model_path = f"{checkpoint_path.parent}"
-        if not (checkpoint_path.parent/"chat_template.json").exists():
+        if not (checkpoint_path.parent/"chat_template.json").exists() and 'llava' in checkpoint_path.parent.name:
             from huggingface_hub import hf_hub_download
 
             file_path = hf_hub_download(
