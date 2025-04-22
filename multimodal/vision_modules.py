@@ -181,6 +181,9 @@ class LlavaVisionModule(VisionModule):
         self.vision_tower = build_vision_tower(config, delay_load=self.delay_load)
         self.vision_resampler = build_vision_resampler(config, vision_tower=self.vision_tower)
         self.mm_projector = build_vision_projector(config, vision_cfg=self.vision_tower)
+        self.vision_tower = self.vision_tower.to(dtype=dtype, device=device)
+        self.vision_resampler = self.vision_resampler.to(dtype=dtype, device=device)
+        self.mm_projector = self.mm_projector.to(dtype=dtype, device=device)
         self.image_newline = None
         if "unpad" in getattr(config, "mm_patch_merge_type", ""):
             self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=dtype))
