@@ -9,7 +9,7 @@ from PIL import Image as PILImage
 from urllib.request import urlopen
 
 # Import necessary components from evaluate.py 
-from evaluate import process_one_question
+from evaluate import process_one_question, model_forward, draft_model_forward, decode_one_token, prefill
 from tokenizer import get_tokenizer
 from conversation import get_conversation_template
 from utils import load_model
@@ -38,7 +38,7 @@ def warmup(model, tokenizer, vision_modules=None, draft_model=None, draft_vision
         cross_seq_len = 7000
     
     # Process the question using the process_questions function from evaluate.py
-    process_one_question(
+    generator = process_one_question(
         warmup_question, 
         model, 
         tokenizer, 
@@ -55,6 +55,15 @@ def warmup(model, tokenizer, vision_modules=None, draft_model=None, draft_vision
         draft_max_cache_size=None,
         cross_attention_seq_length=cross_seq_len
     )
+    try:
+        while True:
+            _ = next(generator)
+    except StopIteration:
+        pass
+    # Clear the cache of the model and draft model
+    model.clear_cache()
+    if draft_model is not None:
+        draft_model.clear_cache()
 
 def bot(history, temperature, top_k, use_speculative, session_state, speculate_k=5, streaming=True):
     if not history:
@@ -256,6 +265,46 @@ def update_gallery(img, state):
     # Return the current images for display
     return state["current_msg_images"], state
 
+def compile_model_functions(compile=True, compile_prefill=False, has_draft_model=False):
+    """
+    Compile the forward functions from evaluate.py to optimize performance.
+    
+    Args:
+        compile: Whether to compile the core functions
+        compile_prefill: Whether to compile the prefill function
+        has_draft_model: Whether a draft model is being used for speculative decoding
+    """
+    if not compile:
+        return
+    
+    print("Compiling model functions...")
+    
+    # Store the original module references
+    import evaluate
+    import sys
+    
+    # Compile the functions based on conditions
+    if compile:
+        # Always compile model_forward and decode_one_token when compile=True
+        compiled_model_forward = torch.compile(model_forward, mode="max-autotune", fullgraph=True)
+        compiled_decode_one_token = torch.compile(decode_one_token, mode="max-autotune", fullgraph=True)
+        
+        # Replace in the evaluate module
+        evaluate.model_forward = compiled_model_forward
+        evaluate.decode_one_token = compiled_decode_one_token
+        
+        # Only compile draft_model_forward if speculative decoding is used
+        if has_draft_model:
+            compiled_draft_model_forward = torch.compile(draft_model_forward, mode="max-autotune", fullgraph=True)
+            evaluate.draft_model_forward = compiled_draft_model_forward
+    
+    # Compile prefill only if specifically requested
+    if compile_prefill:
+        compiled_prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
+        evaluate.prefill = compiled_prefill
+    
+    print("Model functions compiled successfully")
+
 # Update argument parser with multimodal options
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -324,6 +373,22 @@ parser.add_argument(
     default=None,
     help="Device to use for speculative decoding",
 )
+parser.add_argument(
+    "--compile",
+    action="store_true",
+    help="Compile the forward functions",
+)
+parser.add_argument(
+    "--compile_prefill",
+    action="store_true",
+    help="Compile the prefill function",
+)
+parser.add_argument(
+    "--num_warmup",
+    type=int,
+    default=1,
+    help="Number of warmup questions",
+)
 args = parser.parse_args()
 
 if args.random_seed:
@@ -331,6 +396,14 @@ if args.random_seed:
 # Initialize model and tokenizer
 print(f"Loading model from {args.checkpoint_path} on {args.device}")
 precision = {"fp16": torch.float16, "fp32": torch.float32, "bf16": torch.bfloat16}[args.dtype]
+
+# Compile model functions - add this before loading the model
+has_draft_model = args.draft_checkpoint_path is not None
+compile_model_functions(
+    compile=args.compile,
+    compile_prefill=args.compile_prefill if hasattr(args, 'compile_prefill') else False,
+    has_draft_model=has_draft_model
+)
 
 # Load target model
 model = load_model(args.checkpoint_path, args.device, precision, use_tp=False)
@@ -383,7 +456,8 @@ if args.draft_checkpoint_path:
 tokenizer = get_tokenizer(args.checkpoint_path.parent / "tokenizer.model", args.checkpoint_path)
 
 # Warmup the model
-warmup(model, tokenizer, vision_modules, draft_model, draft_vision_modules)
+for i in range(args.num_warmup):
+    warmup(model, tokenizer, vision_modules, draft_model, draft_vision_modules)
 
 custom_css = """
 #speed textarea {
