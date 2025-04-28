@@ -4,7 +4,7 @@ from typing import List, Optional
 import torch
 import torch.distributed as dist
 from torch import nn
-from model import Attention, FeedForward, Transformer, CrossAttention
+from model import Attention, FeedForward, Transformer, CrossAttention, Llama4ConditionalFeedForward, Llama4MOEFeedForward
 from quantize import WeightOnlyInt4Linear
 
 
@@ -140,11 +140,53 @@ def apply_tp_transformer(transformer: Transformer) -> None:
     transformer.config.dim //= world_size
     transformer.config.n_local_heads //= world_size
 
+def apply_tp_moe_conditional_ffn(cond_ffn: Llama4ConditionalFeedForward) -> None:
+    """Apply tensor parallelism to conditional FFN in MoE layer."""
+    rank = _get_rank()
+    world_size = _get_world_size()
+    
+    # Shard w1 (gate_up_proj) along intermediate dimension (column-wise for each expert)
+    # Original shape: [num_experts, dim, 2*intermediate_size]
+    if cond_ffn.w1.size(2) % world_size != 0:
+        raise ValueError(f"Cannot evenly shard intermediate size ({cond_ffn.w1.size(2)}) across {world_size} GPUs")
+    
+    chunk_size = cond_ffn.w1.size(2) // world_size
+    shard_w1 = cond_ffn.w1[:, :, rank * chunk_size:(rank + 1) * chunk_size]
+    cond_ffn.w1 = nn.Parameter(shard_w1, requires_grad=False)
+    
+    # Shard w2 (down_proj) along source dimension (row-wise for each expert)
+    # Original shape: [num_experts, intermediate_size, dim]
+    if cond_ffn.w2.size(1) % world_size != 0:
+        raise ValueError(f"Cannot evenly shard intermediate size ({cond_ffn.w2.size(1)}) across {world_size} GPUs")
+    
+    chunk_size = cond_ffn.w2.size(1) // world_size
+    shard_w2 = cond_ffn.w2[:, rank * chunk_size:(rank + 1) * chunk_size, :]
+    cond_ffn.w2 = nn.Parameter(shard_w2, requires_grad=False)
+
+def apply_tp_moe_ffn(moe_ffn: Llama4MOEFeedForward) -> None:
+    """Apply tensor parallelism to MoE FFN layer."""
+    # Don't shard router - it needs to compute full expert selection logits
+    # The router is a small component and keeping it replicated ensures consistent expert selection
+    
+    # Shard conditional FFN
+    apply_tp_moe_conditional_ffn(moe_ffn.cond_ffn)
+    
+    # Shard shared expert (like regular FFN)
+    apply_tp_ffn(moe_ffn.shared_expert)
+    
+    # Register hooks for the MoE layer
+    register_tp_hooks(moe_ffn)
+
 def apply_tp(model: Transformer) -> None:
     try:
         apply_tp_transformer(model)
         for block in model.layers:
-            apply_tp_ffn(block.feed_forward)
+            # Check if the feed_forward is a MoE layer or regular FFN
+            if isinstance(block.feed_forward, Llama4MOEFeedForward):
+                apply_tp_moe_ffn(block.feed_forward)
+            else:
+                apply_tp_ffn(block.feed_forward)
+                
             if getattr(block, "attention", False):
                 apply_tp_attn(block.attention)
             elif getattr(block, 'cross_attention', False):

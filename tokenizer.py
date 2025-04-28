@@ -132,7 +132,7 @@ def get_tokenizer(tokenizer_model_path, model_name):
     - TokenizerInterface: An instance of a tokenizer.
     """
 
-    if "llama-3" in str(model_name).lower():
+    if "llama-3" in str(model_name).lower() or "llama-4" in str(model_name).lower():
         return TiktokenWrapper(tokenizer_model_path)
     elif 'qwen' in str(model_name).lower():
         return HuggingFaceTokenizerWrapper(tokenizer_model_path.parent)

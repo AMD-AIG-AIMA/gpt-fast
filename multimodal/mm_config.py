@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Type
 
-from transformers import MllamaConfig
+try:
+    from transformers import MllamaConfig, Llama4VisionConfig
+except ImportError:
+    raise ImportError("Please upgrade transformers to version 4.49.0 or higher.")
 
 
 def get_default_pinpoints() -> List[List[int]]:
@@ -114,9 +117,9 @@ class QwenVisionModelArgs(MultimodalModelArgs):
     max_ratio: int = 200
         
 
-@MultimodalModelArgs.register("llama")
+@MultimodalModelArgs.register("llama-3")
 @dataclass
-class LlamaMultimodalModelArgs(MultimodalModelArgs,MllamaConfig):
+class Llama3MultimodalModelArgs(MultimodalModelArgs,MllamaConfig):
     """Arguments specific to Llama models"""
     _name_or_path: str = ""
     add_cross_attention: bool = False
@@ -201,6 +204,57 @@ class LlamaMultimodalModelArgs(MultimodalModelArgs,MllamaConfig):
 
         # Initialize MllamaConfig explicitly with filtered arguments
         MllamaConfig.__init__(self, **llama_config_args)
+    
+
+@MultimodalModelArgs.register("llama-4")
+@dataclass
+class Llama4MultimodalModelArgs(MultimodalModelArgs, Llama4VisionConfig):
+    """Arguments specific to Llama 4 vision models"""
+    # Vision config parameters
+    hidden_act: str = "gelu"
+    attention_dropout: float =  0.0
+    hidden_size: int = 1408
+    image_size: int = 336
+    intermediate_size: int = 5632
+    model_type: str = "llama4_vision_model"
+    multi_modal_projector_bias: bool = False
+    norm_eps: float = 1e-05
+    num_attention_heads: int = 16
+    num_channels: int = 3
+    num_hidden_layers: int = 34
+    patch_size: int = 14
+    pixel_shuffle_ratio: float = 0.5
+    projector_dropout: float = 0.0
+    projector_input_dim: int = 4096
+    projector_output_dim: int = 4096
+    rope_theta: int = 10000
+    vision_feature_layer: int = -1
+    vision_feature_select_strategy: str = "default"
+    vision_output_dim: int = 4096
+    # Special token indices
+    boi_token_index: int = 200080
+    eoi_token_index: int = 200081
+    image_token_index: int = 200092
+    # Text model hidden size for cross-projection
+    text_hidden_size: int = 5120
+    text_config = Config(initializer_range=0.02)
+    vision_config = Config()
+    torch_dtype: str = "bfloat16"
+    _attn_implementation_internal = None
+    pruned_heads = {}
+    output_attentions: bool = False
+    return_dict: bool = True
+    return_dict_in_generate: bool = False
+    torchscript: bool = False
+    typical_p: float = 1.0
+
+    # def __post_init__(self):
+    #     # Extract all valid MllamaConfig arguments
+    #     valid_keys = set(Llama4VisionConfig.__annotations__.keys())
+    #     llama_config_args = {k: v for k, v in self.__dict__.items() if k in valid_keys}
+
+    #     # Initialize MllamaConfig explicitly with filtered arguments
+    #     Llama4VisionConfig.__init__(self, **llama_config_args)
     
 
 
@@ -338,14 +392,27 @@ mm_transformer_config = {
           hidden_size=1280,
           image_size=560,
       ),
-      "llama-3.2-90b-vision-instruct": dict(
+    "llama-3.2-90b-vision-instruct": dict(
           attention_heads=16,
           hidden_act="gelu",
           hidden_size=1280,
           image_size=560,
           text_hidden_size=8192,
       ),
+    "llama-4-Scout-17B-16E-Instruct": dict(
+        hidden_act= "gelu",
+        hidden_size= 1408,
+        image_size= 336,
+        intermediate_size= 5632,
+        num_attention_heads= 16,
+    ),
 }
-  
-  
 
+# Example usage
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name", type=str, default="llama-4-Scout-17B-16E-Instruct")
+    args = parser.parse_args()
+    model_args = MultimodalModelArgs.from_name(args.model_name)
+    print(model_args)

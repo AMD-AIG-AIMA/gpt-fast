@@ -332,17 +332,31 @@ class LlamaVisionModule(VisionModule):
           dtype: torch.dtype = torch.float16,
           device: Optional[Union[str, torch.device]] = None):
         super().__init__(config, dtype, device)
-        from transformers import MllamaVisionModel, MllamaProcessor
-        self.vision_model = MllamaVisionModel._from_config(config).to(dtype=dtype, device=device)
-        # self.vision_model = MllamaVisionModel.from_pretrained(str(checkpoint_path.parent))
-        self.multi_modal_projector = nn.Linear(
-            config.vision_output_dim,
-            config.text_hidden_size,
-            bias=True,
-            dtype=dtype, device=device
-        )
+        self.checkpoint_path = checkpoint_path
+        if "llama-3.2" in str(checkpoint_path).lower():
+            from transformers import MllamaVisionModel, MllamaProcessor
+            self.vision_model = MllamaVisionModel._from_config(config).to(dtype=dtype, device=device)
+            # self.vision_model = MllamaVisionModel.from_pretrained(str(checkpoint_path.parent))
+            self.multi_modal_projector = nn.Linear(
+                config.vision_output_dim,
+                config.text_hidden_size,
+                bias=True,
+                dtype=dtype, device=device
+            )
+            
+            self.processor = MllamaProcessor.from_pretrained(str(checkpoint_path.parent))
+        elif "llama-4" in str(checkpoint_path).lower():
+            from transformers import Llama4VisionModel, AutoProcessor
+            self.vision_model = Llama4VisionModel._from_config(config).to(dtype=dtype, device=device)
+            self.multi_modal_projector = nn.Module()
+            self.multi_modal_projector.linear_1 = nn.Linear(
+                config.vision_output_dim,
+                config.text_hidden_size,
+                bias=False,
+                dtype=dtype, device=device
+            )
+            self.processor = AutoProcessor.from_pretrained(str(checkpoint_path.parent))
         
-        self.processor = MllamaProcessor.from_pretrained(str(checkpoint_path.parent))
         if checkpoint_path is not None:
             self.load_checkpoint(Path(checkpoint_path))
         self.image_token = "<|image|>"
@@ -362,36 +376,63 @@ class LlamaVisionModule(VisionModule):
         prompt = re.sub(r'<image\s*\d*>', '<|image|>', prompt)
         if len(images) == 0:
             inputs = self.processor(text=prompt, return_tensors="pt").to(self._device)
-            cross_attention_states = None
-            self.cross_attention_masks = {}
+            # cross_attention_states = None
+            # self.cross_attention_masks = {}
+            return inputs.input_ids, None
         else:
             inputs = self.processor(
                 images=images,
                 text=prompt,
                 return_tensors="pt"
-            ).to(self._device)
-            vision_outputs = self.vision_model(
-                    pixel_values=inputs.pixel_values,
-                    aspect_ratio_ids=inputs.aspect_ratio_ids,
-                    aspect_ratio_mask=inputs.aspect_ratio_mask,
-                    output_hidden_states=False,
-                    output_attentions=False,
-                    return_dict=True,
-            )
-            cross_attention_states = vision_outputs[0]
-            cross_attention_states = self.multi_modal_projector(cross_attention_states).reshape(
-                -1, cross_attention_states.shape[-2], self.config.text_hidden_size
-            )
-            if prune_method is not None and prune_ratio > 0.0:
-                cross_attention_states = prune_mm_tokens(cross_attention_states, prune_method, prune_ratio)
+            ).to(self._device).to(dtype=self.vision_model.dtype)
+            if "llama-3.2" in str(self.checkpoint_path).lower():
+                vision_outputs = self.vision_model(
+                        pixel_values=inputs.pixel_values,
+                        aspect_ratio_ids=inputs.aspect_ratio_ids,
+                        aspect_ratio_mask=inputs.aspect_ratio_mask,
+                        output_hidden_states=False,
+                        output_attentions=False,
+                        return_dict=True,
+                )
+                cross_attention_states = vision_outputs[0]
+                cross_attention_states = self.multi_modal_projector(cross_attention_states).reshape(
+                    -1, cross_attention_states.shape[-2], self.config.text_hidden_size
+                )
+                if prune_method is not None and prune_ratio > 0.0:
+                    cross_attention_states = prune_mm_tokens(cross_attention_states, prune_method, prune_ratio)
 
-            cross_attention_mask, out_mask = self._prepare_cross_attention_mask(
-                inputs.cross_attention_mask,
-                num_vision_tokens=cross_attention_states.shape[1],
-                dtype=self.dtype,
-            )
-            self.cross_attention_masks = {'cross_attention_mask': cross_attention_mask, 'cross_attention_mask_out': out_mask}
-        return inputs.input_ids, cross_attention_states
+                cross_attention_mask, out_mask = self._prepare_cross_attention_mask(
+                    inputs.cross_attention_mask,
+                    num_vision_tokens=cross_attention_states.shape[1],
+                    dtype=self.dtype,
+                )
+                self.cross_attention_masks = {'cross_attention_mask': cross_attention_mask, 'cross_attention_mask_out': out_mask}
+                return inputs.input_ids, cross_attention_states
+            elif "llama-4" in str(self.checkpoint_path).lower():
+                inputs_embeds = embed_tokens(inputs.input_ids)
+                vision_outputs = self.vision_model(pixel_values=inputs.pixel_values, output_hidden_states=False).last_hidden_state
+                original_inputs_embeds_shape = inputs_embeds.shape
+
+                vision_flat = vision_outputs.view(-1, vision_outputs.size(-1))
+                projected_vision_flat = self.multi_modal_projector.linear_1(vision_flat)
+
+                special_image_mask = (inputs.input_ids == self.config.image_token_index).unsqueeze(-1)
+                final_mask = special_image_mask.to(inputs_embeds.device)
+                inputs_embeds = inputs_embeds.view(-1, inputs_embeds.size(-1))
+
+                final_mask_1d = final_mask[..., 0].reshape(-1)
+                num_tokens_to_fill = final_mask_1d.sum()
+
+                if num_tokens_to_fill != projected_vision_flat.size(0):
+                    raise ValueError(
+                        f"Mismatch: final_mask wants {num_tokens_to_fill} embeddings, "
+                        f"but multi_modal_projector returned {projected_vision_flat.size(0)}"
+                    )
+
+                expanded_mask = final_mask_1d.unsqueeze(-1).expand(-1, inputs_embeds.size(-1))
+                inputs_embeds = inputs_embeds.masked_scatter(expanded_mask, projected_vision_flat)
+                inputs_embeds = inputs_embeds.view(original_inputs_embeds_shape)
+                return inputs.input_ids, inputs_embeds
 
     def _prepare_cross_attention_mask(
             self,

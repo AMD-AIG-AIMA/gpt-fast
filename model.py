@@ -37,6 +37,9 @@ class ModelArgs:
     wqkv_bias: Optional[bool] = False
     mm_config: Optional[MultimodalModelArgs] = None
     cross_attention_layers: Optional[list] = field(default_factory=list) 
+    moe_layers: Optional[Union[int, list]] = field(default_factory=list)
+    moe_num_experts: Optional[int] = None
+    num_activated_experts: Optional[int] = None
 
     def __post_init__(self):
         if self.n_local_heads == -1:
@@ -46,6 +49,9 @@ class ModelArgs:
             n_hidden = int(2 * hidden_dim / 3)
             self.intermediate_size = find_multiple(n_hidden, 256)
         self.head_dim = self.dim // self.n_head
+        if isinstance(self.moe_layers, int):
+            # This is for LLama 4 when "interleave_moe_layer_step" is provided instead of MoE layers
+            self.moe_layers = list(range(self.moe_layers-1, self.n_layer, self.moe_layers))
 
     @classmethod
     def from_name(cls, name: str):
@@ -115,19 +121,23 @@ transformer_configs = {
         mm_config=MultimodalModelArgs.from_name("llama-3.2-90b-vision-instruct")
     ),
     "Qwen2.5-VL-3B-Instruct":dict(block_size=32768, n_layer=36, n_head=16, n_local_heads=2, dim=2048, intermediate_size=11008, vocab_size=151936,
-        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-3B-Instruct")
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("Qwen2.5-VL-3B-Instruct")
     ),
     "Qwen2.5-VL-7B-Instruct":dict(block_size=32768, n_layer=28, n_head=28, n_local_heads=4, dim=3584, intermediate_size=18944, vocab_size=152064,
-        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-7B-Instruct")
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("Qwen2.5-VL-7B-Instruct")
     ),
     "Qwen2.5-VL-72B-Instruct":dict(block_size=32768, n_layer=80, n_head=64, n_local_heads=8, dim=8192, intermediate_size=29568, vocab_size=152064,
-        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=QwenVisionModelArgs.from_name("Qwen2.5-VL-72B-Instruct")
+        rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True, mm_config=MultimodalModelArgs.from_name("Qwen2.5-VL-72B-Instruct")
     ),
     "Qwen2.5-3B-Instruct":dict(block_size=32768, n_layer=36, n_head=16, n_local_heads=2, dim=2048, intermediate_size=11008, vocab_size=151936,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True,
     ),
     "Qwen2.5-7B-Instruct":dict(block_size=131072, n_layer=28, n_head=28, n_local_heads=4, dim=3584, intermediate_size=18944, vocab_size=152064,
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True,
+    ),
+    "Llama-4-Scout-17B-16E-Instruct":dict(block_size=10485760, n_layer=48, n_head=40, n_local_heads=8, dim=5120, intermediate_size=8192, vocab_size=202048,
+        rope_base=500000.0, norm_eps=1e-5, head_dim=128, moe_layers=1, moe_num_experts=16, num_activated_experts=1,
+        mm_config=MultimodalModelArgs.from_name("Llama-4-Scout-17B-16E-Instruct")
     ),
 }
 
@@ -166,7 +176,7 @@ class Transformer(nn.Module):
             if i in cross_attention_layers:
                 self.layers.append(CrossAttentionBlock(config))
             else:
-                self.layers.append(TransformerBlock(config))
+                self.layers.append(TransformerBlock(config, i))
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
@@ -304,10 +314,17 @@ class Transformer(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: ModelArgs) -> None:
+    def __init__(self, config: ModelArgs, layer_idx: int = -1) -> None:
         super().__init__()
         self.attention = Attention(config)
-        self.feed_forward = FeedForward(config)
+        
+        # Determine whether to use MoE or regular FFN based on layer index
+        if (hasattr(config, 'moe_layers') and  config.moe_layers is not None and 
+        layer_idx in config.moe_layers and config.moe_num_experts is not None):
+            self.feed_forward = Llama4MOEFeedForward(config)
+        else:
+            self.feed_forward = FeedForward(config)
+            
         self.ffn_norm = RMSNorm(config.dim, config.norm_eps)
         self.attention_norm = RMSNorm(config.dim, config.norm_eps)
 
@@ -557,3 +574,61 @@ class CrossAttention(nn.Module):
         y = self.wo(y)
 
         return y
+
+class Llama4ConditionalFeedForward(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        # Replace separate w1, w2, w3 with gate_up_proj and down_proj like Llama4
+        self.w1 = nn.Parameter(torch.empty(config.moe_num_experts, config.dim, 2 * config.intermediate_size))
+        self.w2 = nn.Parameter(torch.empty(config.moe_num_experts, config.intermediate_size, config.dim))
+        
+    def forward(self, x: Tensor, expert_indices: Tensor) -> Tensor:
+        # Extract expert-specific weights
+        gate_up_weights = self.w1[expert_indices]  # [T, A, D, 2*I]
+        down_weights = self.w2[expert_indices]  # [T, A, I, D]
+        
+        # Compute gate_up and split into gate and up parts
+        gate_up = torch.einsum('ti,taio->tao', x, gate_up_weights)
+        gate, up = gate_up.chunk(2, dim=-1)  # Split along intermediate dim
+        
+        # Apply SiLU activation to gate and multiply with up
+        activated = F.silu(gate) * up
+        
+        # Project back to hidden dimension
+        expert_outs = torch.einsum('tao,taoi->tai', activated, down_weights)
+        return expert_outs
+
+
+class Llama4MOEFeedForward(nn.Module):
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.router = nn.Linear(config.dim, config.moe_num_experts, bias=False)
+        self.cond_ffn = Llama4ConditionalFeedForward(config)
+        self.dim = config.dim
+        self.num_activated_experts = config.num_activated_experts
+        
+        # Add a shared expert like Llama4
+        self.shared_expert = FeedForward(config)
+        
+    def forward(self, x: Tensor) -> Tensor:
+        original_shape = x.shape
+        x = x.view(-1, self.dim)
+        
+        # Router logits and scores
+        scores = self.router(x)  # [T, E]
+        expert_weights = F.softmax(scores, dim=-1)
+        expert_weights, expert_indices = torch.topk(expert_weights, self.num_activated_experts, dim=-1)  # [T, A], [T, A]
+        expert_weights /= expert_weights.sum(dim=-1, keepdim=True)  # [T, A]
+        
+        # Get outputs from conditional FFN
+        expert_outs = self.cond_ffn(x, expert_indices)
+        
+        # Add shared expert contribution
+        shared_out = self.shared_expert(x)
+        
+        # Combine MoE output with shared expert output
+        moe_out = torch.einsum('tai,ta->ti', expert_outs, expert_weights)
+        combined_out = moe_out + shared_out
+        
+        # Restore original shape
+        return combined_out.view(original_shape)

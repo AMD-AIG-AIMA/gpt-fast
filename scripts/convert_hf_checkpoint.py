@@ -79,10 +79,16 @@ def convert_hf_checkpoint(
         "model.layers.{}.cross_attn.q_norm.weight": "layers.{}.cross_attention.q_norm.weight",
         "model.layers.{}.cross_attn.q_proj.weight": "layers.{}.cross_attention.wq.weight",
         "model.layers.{}.cross_attn.v_proj.weight": "layers.{}.cross_attention.wv.weight",
-        "model.layers.{}.cross_attn_attn_gate": "layers.{}.cross_attn_attn_gate",
-        "model.layers.{}.cross_attn_mlp_gate": "layers.{}.cross_attn_mlp_gate",
-        "model.norm.weight": "norm.weight",
-        "lm_head.weight": "output.weight",
+        'model.layers.{}.cross_attn_attn_gate': 'layers.{}.cross_attn_attn_gate',
+        'model.layers.{}.cross_attn_mlp_gate': 'layers.{}.cross_attn_mlp_gate',
+        'model.layers.{}.feed_forward.experts.gate_up_proj': "layers.{}.feed_forward.cond_ffn.w1",
+        'model.layers.{}.feed_forward.experts.down_proj': "layers.{}.feed_forward.cond_ffn.w2",
+        'model.layers.{}.feed_forward.router.weight': "layers.{}.feed_forward.router.weight",
+        'model.layers.{}.feed_forward.shared_expert.gate_proj.weight': 'layers.{}.feed_forward.shared_expert.w1.weight',
+        'model.layers.{}.feed_forward.shared_expert.up_proj.weight': "layers.{}.feed_forward.shared_expert.w3.weight",
+        'model.layers.{}.feed_forward.shared_expert.down_proj.weight': "layers.{}.feed_forward.shared_expert.w2.weight",
+        'model.norm.weight': "norm.weight",
+        'lm_head.weight': "output.weight",
     }
     bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
 
@@ -118,22 +124,9 @@ def convert_hf_checkpoint(
     final_result = {}
     if 'lm_head.weight' not in merged_result:
         merged_result['lm_head.weight'] = merged_result['model.embed_tokens.weight']
-    if "llava" in model_name.lower():
-        save_llava_vision_parts(merged_result, checkpoint_dir)
-    elif "llama" in model_name.lower() and "vision" in model_name.lower():
-        save_llama_vision_parts(merged_result, checkpoint_dir)
-    elif "qwen2.5" in model_name.lower():
-        save_qwen2_5vl_vision_parts(merged_result, checkpoint_dir)
+    # Save vision parts if they exist
+    merged_result = save_vision_parts(merged_result, checkpoint_dir)
     for key, value in merged_result.items():
-        if "llava" in model_name.lower() and key.startswith(
-            ("model.vision_tower", "model.mm_projector", "model.image_newline")
-        ):
-            continue  # Skip these keys for final_result
-        elif "llama" in model_name.lower() and key.startswith(
-            ("vision_model", "multi_modal_projector")):
-            continue  # Skip these keys for final_result
-        elif "qwen2.5" in model_name.lower() and key.startswith("visual"):
-            continue
         if "layers" in key:
             abstract_key = re.sub(r'(\d+)', '{}', key)
             layer_num = re.search(r'\d+', key).group(0)
@@ -212,48 +205,62 @@ def create_simple_index_file(checkpoint_dir: Path):
     print(f"Created index file: {index_file}")
     return index_file
         
-def save_llava_vision_parts(merged_result, checkpoint_dir):
-    parts = [
-        "vision_tower",
-        "mm_projector",
-        "image_newline"]
-    vision_modules = {}
-    for key, value in merged_result.items():
-        for part in parts:
-            if key.startswith(f"model.{part}"):
-                # getting the model. out of the key
-                vision_modules[key[6:]] = value
-                break
- 
-    file_path = checkpoint_dir / "vision_modules.pth"
-    torch.save(vision_modules, file_path)
-    print(f"Saved vision_modules checkpoint to {file_path}")
+def save_vision_parts(merged_result, checkpoint_dir):
+    """Save vision-related model parts based on model type.
     
-def save_qwen2_5vl_vision_parts(merged_result, checkpoint_dir):
-    vision_modules = {}
-    for key, value in merged_result.items():
-        if key.startswith("visual"):
-            # getting the visual. out of the key
-            vision_modules[key[7:]] = value
-    file_path = checkpoint_dir / "vision_modules.pth"
-    torch.save(vision_modules, file_path)
-    print(f"Saved vision_modules checkpoint to {file_path}")
+    Args:
+        merged_result: Dictionary of model weights
+        checkpoint_dir: Directory to save vision modules
+    """
+    config = {
+        "llava": {
+            "prefix": "model.",
+            "parts": ["vision_tower", "mm_projector", "image_newline"],
+            "strip_chars": 6  # length of "model."
+        },
+        "llama": {
+            "prefix": "",
+            "parts": ["vision_model", "multi_modal_projector"],
+            "strip_chars": 0  # no stripping
+        },
+        "qwen": {
+            "prefix": "",
+            "parts": ["visual"],
+            "strip_chars": 7  # length of "visual."
+        }
+    }
 
-def save_llama_vision_parts(merged_result, checkpoint_dir):
-    parts = [
-        "vision_model",
-        "multi_modal_projector"]
+    cfg = None
+    for model_type in config.keys():
+        if model_type in str(checkpoint_dir.name).lower():
+            cfg = config[model_type]
+        
+    if cfg is None:
+        print(f"No multimodal parts or unknown model type: {checkpoint_dir.name}")
+        return merged_result
+
     vision_modules = {}
-    for key, value in merged_result.items():
-        for part in parts:
-            if key.startswith(f"{part}"):
-                # getting the model. out of the key
-                vision_modules[key] = value
+    key_weights = list(merged_result.keys())
+    for key in key_weights:
+        for part in cfg["parts"]:
+            search_key = f"{cfg['prefix']}{part}"
+            if key.startswith(search_key):
+                # Strip prefix if needed
+                if cfg["strip_chars"] > 0:
+                    new_key = key[cfg["strip_chars"]:]
+                else:
+                    new_key = key
+                vision_modules[new_key] = merged_result[key]
+                merged_result.pop(key)
                 break
- 
+    
     file_path = checkpoint_dir / "vision_modules.pth"
     torch.save(vision_modules, file_path)
-    print(f"Saved vision_modules checkpoint to {file_path}")
+    if len(vision_modules) > 0:
+        print(f"Saved vision_modules checkpoint to {file_path}")
+    else:
+        print(f"No multimodal parts found for {checkpoint_dir.name}")
+    return merged_result
 
 if __name__ == '__main__':
     import argparse
