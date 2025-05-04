@@ -54,21 +54,66 @@ class TiktokenWrapper(TokenizerInterface):
         assert os.path.isfile(model_path), str(model_path)
         mergeable_ranks = load_tiktoken_bpe(str(model_path))
         num_base_tokens = len(mergeable_ranks)
-        special_tokens = [
-            "<|begin_of_text|>",
-            "<|end_of_text|>",
-            "<|reserved_special_token_0|>",
-            "<|reserved_special_token_1|>",
-            "<|reserved_special_token_2|>",
-            "<|reserved_special_token_3|>",
-            "<|start_header_id|>",
-            "<|end_header_id|>",
-            "<|reserved_special_token_4|>",
-            "<|eot_id|>",  # end of turn
-        ] + [
-            f"<|reserved_special_token_{i}|>"
-            for i in range(5, self.num_reserved_special_tokens - 5)
-        ]
+        if 'llama-4' in str(model_path).lower():
+            self.num_reserved_special_tokens = 1134
+            special_tokens = [
+                "<|begin_of_text|>",
+                "<|end_of_text|>",
+                "<|fim_prefix|>",
+                "<|fim_middle|>",
+                "<|fim_suffix|>",
+                "<|header_start|>",
+                "<|header_end|>",
+                "<|eom|>",
+                "<|eot|>",
+                "<|step|>",
+                "<|text_post_train_reserved_special_token_0|>",
+                "<|text_post_train_reserved_special_token_1|>",
+                "<|text_post_train_reserved_special_token_2|>",
+                "<|text_post_train_reserved_special_token_3|>",
+                "<|text_post_train_reserved_special_token_4|>",
+                "<|text_post_train_reserved_special_token_5|>",
+                "<|python_start|>",
+                "<|python_end|>",
+                "<|finetune_right_pad|>",
+
+            ] + [
+                f"<|text_post_train_reserved_special_token_{i}|>"
+                for i in range(6, 67)
+            ] + [
+                "<|image_start|>",
+                "<|image_end|>",
+                "<|vision_reserved_special_token_0|>",
+                "<|vision_reserved_special_token_1|>",
+                "<|tile_x_separator|>",
+                "<|tile_y_separator|>",
+                "<|vision_reserved_special_token_2|>",
+                "<|vision_reserved_special_token_3|>",
+                "<|vision_reserved_special_token_4|>",
+                "<|vision_reserved_special_token_5|>",
+                "<|image|>",
+                "<|vision_reserved_special_token_6|>",
+                "<|patch|>"
+            ] + [
+                f"<|vision_reserved_special_token_{i}|>"
+                for i in range(7, 1048)
+            ]
+        else:
+            special_tokens = [
+                "<|begin_of_text|>",
+                "<|end_of_text|>",
+                "<|reserved_special_token_0|>",
+                "<|reserved_special_token_1|>",
+                "<|reserved_special_token_2|>",
+                "<|reserved_special_token_3|>",
+                "<|start_header_id|>",
+                "<|end_header_id|>",
+                "<|reserved_special_token_4|>",
+                "<|eot_id|>",  # end of turn
+            ] + [
+                f"<|reserved_special_token_{i}|>"
+                for i in range(5, self.num_reserved_special_tokens - 5)
+            ]
         self.special_tokens = {
             token: num_base_tokens + i for i, token in enumerate(special_tokens)
         }

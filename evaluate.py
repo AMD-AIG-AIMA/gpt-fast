@@ -394,7 +394,7 @@ def generate(
 def encode_tokens(tokenizer, string, bos=True, device=default_device):
     tokens = tokenizer.encode(string)
     if bos:
-        if tokenizer.bos_id() is not None:
+        if tokenizer.bos_id() is not None and tokens[0] != tokenizer.bos_id():
             tokens = [tokenizer.bos_id()] + tokens
     return torch.tensor(tokens, dtype=torch.int, device=device)
 

@@ -13,7 +13,7 @@ from torch import Tensor
 from torch.nn import functional as F
 
 
-from multimodal.mm_config import MultimodalModelArgs, QwenVisionModelArgs
+from multimodal.mm_config import MultimodalModelArgs
 from multimodal.qwen2_5vl.preprocessing import get_rope_index
 
 def find_multiple(n: int, k: int) -> int:
@@ -136,7 +136,8 @@ transformer_configs = {
         rope_base=1000000.0, norm_eps=1e-6, head_dim=128, wqkv_bias=True,
     ),
     "Llama-4-Scout-17B-16E-Instruct":dict(block_size=10485760, n_layer=48, n_head=40, n_local_heads=8, dim=5120, intermediate_size=8192, vocab_size=202048,
-        rope_base=500000.0, norm_eps=1e-5, head_dim=128, moe_layers=1, moe_num_experts=16, num_activated_experts=1,
+        rope_base=500000.0, rope_scaling=dict(factor=16.0, low_freq_factor=1.0, high_freq_factor=1.0, original_max_position_embeddings=8192), 
+        norm_eps=1e-5, head_dim=128, moe_layers=1, moe_num_experts=16, num_activated_experts=1,
         mm_config=MultimodalModelArgs.from_name("Llama-4-Scout-17B-16E-Instruct")
     ),
 }
