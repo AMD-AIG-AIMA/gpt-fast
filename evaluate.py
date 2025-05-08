@@ -282,10 +282,10 @@ def generate(
     device, dtype = prompt.device, prompt.dtype
     # Setup model caches
     with torch.device(device):
-        model.setup_caches(max_batch_size=batch_size, max_cache_size=start_pos["target"]+lengths["max_cache_size"], prompt=prompt,
+        model.setup_caches(max_batch_size=batch_size, max_cache_size=lengths["max_cache_size"], prompt=prompt,
                            cross_attention_seq_length=lengths["cross_attention_seq_length"], preserve_history=start_pos["target"]>0)
         if is_speculative and draft_model is not model:
-            draft_model.setup_caches(max_batch_size=batch_size, max_cache_size=start_pos["draft"]+lengths["draft_max_cache_size"], prompt=draft_prompt,
+            draft_model.setup_caches(max_batch_size=batch_size, max_cache_size=lengths["draft_max_cache_size"], prompt=draft_prompt,
                                      cross_attention_seq_length=lengths["cross_attention_seq_length"], preserve_history=start_pos["draft"]>0)
 
     # Initialize sequence tensor
@@ -357,7 +357,7 @@ def generate(
     else:
         new_tokens, new_probs = [], []
         cur_token = next_token.view(batch_size, -1)
-        num_new_tokens = max_new_tokens - 1 + start_pos["target"]
+        num_new_tokens = max_new_tokens - 1
         for i in range(num_new_tokens):
             with TimeProfiler("Vanilla Decoding", model_size=model_size(model), peak_bandwidth=PEAK_BANDWIDTH) as profiler:
                 profiler.set_tokens_processed(1)

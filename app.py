@@ -8,15 +8,16 @@ import re
 from PIL import Image as PILImage
 from urllib.request import urlopen
 
+global process_one_question
 # Import necessary components from evaluate.py 
-from evaluate import process_one_question, model_forward, draft_model_forward, decode_one_token, prefill
+from evaluate import process_one_question
 from tokenizer import get_tokenizer
 from conversation import get_conversation_template
 from utils import load_model
 from multimodal.vision_modules import VisionModule
 
 
-def warmup(model, tokenizer, vision_modules=None, draft_model=None, draft_vision_modules=None):
+def warmup(model, tokenizer, vision_modules=None, draft_model=None, draft_vision_modules=None, max_cache_size=None, draft_max_cache_size=None,):
     conv = get_conversation_template(args.checkpoint_path)
 
     sys_p = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe. Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
@@ -25,7 +26,7 @@ def warmup(model, tokenizer, vision_modules=None, draft_model=None, draft_vision
     # Create a simple question for warmup
     warmup_question = {
         "question_id": "warmup",
-        "turns": ["Hello, can you introduce yourself?"],
+        "turns": ["Hello, can you introduce yourself? <image>"],
         "images": [
             PILImage.open(urlopen("https://www.google.com/images/branding/googlelogo/1x/googlelogo_color_272x92dp.png"))
         ]
@@ -51,8 +52,8 @@ def warmup(model, tokenizer, vision_modules=None, draft_model=None, draft_vision
         args.device,
         vision_modules=vision_modules,
         draft_vision_modules=draft_vision_modules,
-        max_cache_size=None,
-        draft_max_cache_size=None,
+        max_cache_size=max_cache_size,
+        draft_max_cache_size=draft_max_cache_size,
         cross_attention_seq_length=cross_seq_len
     )
     try:
@@ -65,11 +66,15 @@ def warmup(model, tokenizer, vision_modules=None, draft_model=None, draft_vision
     if draft_model is not None:
         draft_model.clear_cache()
 
-def bot(history, temperature, top_k, use_speculative, session_state, speculate_k=5, streaming=True):
+def bot(history, temperature, top_k, use_speculative, session_state, speculate_k=5, num_warmup=1, max_cache_size=None, draft_max_cache_size=None, streaming=True):
     if not history:
         return history, "0.00 tokens/s", "0.00", "0", session_state
-    
     try:
+        if num_warmup > 0 and not session_state["warmed_up"]:
+            for i in range(num_warmup):
+                print(f"Warmup iteration {i+1}/{num_warmup}")
+                warmup(model, tokenizer, vision_modules, draft_model, draft_vision_modules, max_cache_size, draft_max_cache_size)
+                session_state["warmed_up"] = True
         pure_history = session_state.get("pure_history", [])
         current_msg_images = session_state.get("current_msg_images", [])
         # Get start positions from session state or initialize if not present
@@ -125,8 +130,8 @@ def bot(history, temperature, top_k, use_speculative, session_state, speculate_k
             args.device,
             vision_modules=vision_modules,
             draft_vision_modules=draft_vision_modules if use_speculative else None,
-            max_cache_size=None,
-            draft_max_cache_size=None,
+            max_cache_size=max_cache_size,
+            draft_max_cache_size=draft_max_cache_size,
             cross_attention_seq_length=cross_seq_len,
             start_pos=start_pos,
             streaming=streaming
@@ -286,23 +291,16 @@ def compile_model_functions(compile=True, compile_prefill=False, has_draft_model
     # Compile the functions based on conditions
     if compile:
         # Always compile model_forward and decode_one_token when compile=True
-        compiled_model_forward = torch.compile(model_forward, mode="max-autotune", fullgraph=True)
-        compiled_decode_one_token = torch.compile(decode_one_token, mode="max-autotune", fullgraph=True)
-        
-        # Replace in the evaluate module
-        evaluate.model_forward = compiled_model_forward
-        evaluate.decode_one_token = compiled_decode_one_token
+        evaluate.model_forward = torch.compile(evaluate.model_forward, mode="max-autotune-no-cudagraphs")
+        evaluate.decode_one_token = torch.compile(evaluate.decode_one_token, mode="max-autotune-no-cudagraphs")
         
         # Only compile draft_model_forward if speculative decoding is used
         if has_draft_model:
-            compiled_draft_model_forward = torch.compile(draft_model_forward, mode="max-autotune", fullgraph=True)
-            evaluate.draft_model_forward = compiled_draft_model_forward
-    
+             evaluate.draft_model_forward = torch.compile(evaluate.draft_model_forward, mode="max-autotune-no-cudagraphs")
     # Compile prefill only if specifically requested
     if compile_prefill:
-        compiled_prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
-        evaluate.prefill = compiled_prefill
-    
+        evaluate.prefill = torch.compile(evaluate.prefill, dynamic=True)
+
     print("Model functions compiled successfully")
 
 # Update argument parser with multimodal options
@@ -389,6 +387,20 @@ parser.add_argument(
     default=1,
     help="Number of warmup questions",
 )
+
+parser.add_argument(
+    "--max_cache_size",
+    type=int,
+    default=None,
+    help="Maximum cache size for the model",
+)
+
+parser.add_argument(
+    "--draft_max_cache_size",
+    type=int,
+    default=None,
+    help="Maximum cache size for the draft model",
+)
 args = parser.parse_args()
 
 if args.random_seed:
@@ -456,8 +468,8 @@ if args.draft_checkpoint_path:
 tokenizer = get_tokenizer(args.checkpoint_path.parent / "tokenizer.model", args.checkpoint_path)
 
 # Warmup the model
-for i in range(args.num_warmup):
-    warmup(model, tokenizer, vision_modules, draft_model, draft_vision_modules)
+# for i in range(args.num_warmup):
+#     warmup(model, tokenizer, vision_modules, draft_model, draft_vision_modules)
 
 custom_css = """
 #speed textarea {
@@ -476,7 +488,8 @@ with gr.Blocks(css=custom_css) as demo:
         "pure_history": [], 
         "images": [], 
         "current_msg_images": [],
-        "start_pos": {"target": 0, "draft": 0}
+        "start_pos": {"target": 0, "draft": 0},
+        "warmed_up": False,
     })
     
     # Display model information
@@ -492,8 +505,7 @@ with gr.Blocks(css=custom_css) as demo:
         speed_box = gr.Textbox(label="Genetation Speed", elem_id="speed", interactive=False, value="0.00 tokens/s")
         acceptance_box = gr.Textbox(label="Mean Acceptance Length", elem_id="speed", interactive=False, value="0.00")
         tokens_box = gr.Textbox(label="Tokens Generated", elem_id="tokens", interactive=False, value="0")
-    
-    
+
     with gr.Row():
         if multimodal:
             chatbot = gr.Chatbot(height=600, show_label=False, scale=2)
@@ -521,19 +533,22 @@ with gr.Blocks(css=custom_css) as demo:
         temperature = gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label="Temperature", value=args.temperature)
         top_k = gr.Slider(minimum=1, maximum=200, step=1, label="Top K", value=1)
         speculate_k = gr.Slider(minimum=1, maximum=20, step=1, label="Number of draft tokens", value=args.speculate_k)
+        num_warmup = gr.State(args.num_warmup)
+        max_cache_size = gr.State(args.max_cache_size)
+        draft_max_cache_size = gr.State(args.draft_max_cache_size)
     
     enter_event = msg.submit(user, [msg, chatbot, gs, img_input], [msg, chatbot, gs], queue=False).then(
-        bot, [chatbot, temperature, top_k, use_speculative, gs, speculate_k], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
+        bot, [chatbot, temperature, top_k, use_speculative, gs, speculate_k, num_warmup, max_cache_size, draft_max_cache_size], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
     )
     
     clear_button.click(clear, [chatbot, gs], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=False)
     
     send_event = send_button.click(user, [msg, chatbot, gs, img_input], [msg, chatbot, gs], queue=False).then(
-        bot, [chatbot, temperature, top_k, use_speculative, gs, speculate_k], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
+        bot, [chatbot, temperature, top_k, use_speculative, gs, speculate_k, num_warmup, max_cache_size, draft_max_cache_size], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
     )
     
     regenerate_event = regenerate_button.click(regenerate, [chatbot, gs], [chatbot, msg, speed_box, acceptance_box, tokens_box, gs], queue=False).then(
-        bot, [chatbot, temperature, top_k, use_speculative, gs, speculate_k], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
+        bot, [chatbot, temperature, top_k, use_speculative, gs, speculate_k, num_warmup, max_cache_size, draft_max_cache_size], [chatbot, speed_box, acceptance_box, tokens_box, gs], queue=True
     )
     
     stop_button.click(fn=None, inputs=None, outputs=None, cancels=[send_event, regenerate_event, enter_event])

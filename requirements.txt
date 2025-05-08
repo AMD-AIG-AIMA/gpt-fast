@@ -4,3 +4,4 @@ tiktoken
 blobfile
 safetensors
 datasets
+gradio
